@@ -1,1 +1,64 @@
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+// 顶层规则名：file（小写）——你要用 Rule::file 调用它
+file = { SOI ~ ( keyword | white | operator | identify | integer_const | test)+ ~ EOI }
+// 行注释匹配规则
+// 1、"//" 开头直到换行为一个行注释
+// 2、 换行前可以是除换行符号外的任意字符。
+// 注意：这里 (!NEWLINE ~ ANY)*表示下一个字符不是换行的前提下后面可以匹配任务内容
+line_comment = { "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+// 块注释匹配规则
+// 1、"/*" 开头直到出现"*/"为一个块注释
+// 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
+block_comment = { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+// 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
+white = _{ " " | NEWLINE  | line_comment | block_comment }
+
+// 关键字
+int = { "int" }
+float = { "float" }
+sys_y_const = { "const" }
+void = {"void"}
+keyword = {
+     int | float | sys_y_const | void
+}
+// 标识符
+identify = {
+    ("_"|ASCII_ALPHA) ~ (ASCII_ALPHA | ASCII_DIGIT)*
+}
+
+// 数字常量
+integer_const = {
+    ("0" | "0x") ~ (ASCII_ALPHA | ASCII_DIGIT)*
+}
+
+// 操作符
+operator = {
+    openParen |
+    closeParen |
+    openBrace |
+    closeBrace |
+    eq |
+    semicolon
+}
+
+semicolon = { ";" }
+
+eq = {
+ "="
+}
+
+openParen = {
+    "("
+}
+closeParen = {
+    ")"
+}
+
+openBrace = {
+    "{"
+}
+closeBrace = {
+    "}"
+}
+
+test = { "test "}
