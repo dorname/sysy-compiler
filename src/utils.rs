@@ -1,0 +1,34 @@
+use num_traits::Num;
+use num_bigint::BigInt;
+
+pub fn hex_to_int(s: &str) -> Result<BigInt, num_bigint::ParseBigIntError> {
+    // 去空格
+    let mut input  = s.trim();
+    // 去负号
+    input = if input.starts_with('-') {
+        &input[1..]
+    } else {
+        input
+    };
+    // 去掉前缀0x | 0X
+    input = if input.starts_with("0x") || input.starts_with("0X") {
+        &input[2..]
+    }else { input };
+    BigInt::from_str_radix(input, 16)
+}
+
+pub fn oct_to_int(s: &str) -> Result<BigInt, num_bigint::ParseBigIntError> {
+    // 去空格
+    let mut input  = s.trim();
+    // 去负号
+    input = if input.starts_with('-') {
+        &input[1..]
+    } else {
+        input
+    };
+    // 去掉前缀0
+    input = if input.starts_with("0") || input.starts_with("0") {
+        &input[1..]
+    }else { input };
+    BigInt::from_str_radix(input, 8)
+}

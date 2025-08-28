@@ -1,64 +1,131 @@
 
-// 顶层规则名：file（小写）——你要用 Rule::file 调用它
-file = { SOI ~ ( keyword | white | operator | identify | integer_const | test)+ ~ EOI }
+// 顶层规则名：
+File = { START ~ ( Type | Flow | WS | Operator | Identifier | IntegerConst )+ ~ END }
+
+START = _{ SOI }
+END = _{ EOI }
+
 // 行注释匹配规则
 // 1、"//" 开头直到换行为一个行注释
 // 2、 换行前可以是除换行符号外的任意字符。
 // 注意：这里 (!NEWLINE ~ ANY)*表示下一个字符不是换行的前提下后面可以匹配任务内容
-line_comment = { "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 // 块注释匹配规则
 // 1、"/*" 开头直到出现"*/"为一个块注释
 // 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
-block_comment = { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 // 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
-white = _{ " " | NEWLINE  | line_comment | block_comment }
+WS = _{ " " | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
+
+// 数据类型
+Int = @{ "int" }
+Float = @{ "float" }
+Const = @{ "const" }
+Void = @{"void"}
+Type = { Int | Float | Const | Void }
+
+// 流程关键字
+If = @{ "if" }
+Else = @{ "else" }
+While = @{ "while" }
+Break = @{ "break" }
+Continue = @{ "continue" }
+Return = @{ "return" }
+Flow = { If | Else | While | Break | Continue | Return }
 
 // 关键字
-int = { "int" }
-float = { "float" }
-sys_y_const = { "const" }
-void = {"void"}
-keyword = {
-     int | float | sys_y_const | void
+Keyword = {
+     Type | Flow
 }
-// 标识符
-identify = {
-    ("_"|ASCII_ALPHA) ~ (ASCII_ALPHA | ASCII_DIGIT)*
+// Identifier : 以下划线或字母开头，仅包含下划线、英文字母大小写、阿拉伯数字
+Identifier = @{
+    ("_"|ASCII_ALPHA) ~ (ASCII_ALPHANUMERIC | "_" )*
 }
 
-// 数字常量
-integer_const = {
-    ("0" | "0x") ~ (ASCII_ALPHA | ASCII_DIGIT)*
+// IntegerConst : 数字常量，包含十进制数，0开头的八进制数，0x或0X开头的十六进制数
+HEX_DIT = _{ '0'..'9' | 'a'..'f' | 'A'..'F' }
+OCTAL_DIT = _{'0'..'7'}
+Hex = @{ ( "0x" | "0X") ~ HEX_DIT+ }
+Octal = @{ "0" ~ OCTAL_DIT+ }
+Dec = @{ "0" | ( ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* ) }
+IntegerConst = {
+    Hex | Octal | Dec
 }
 
-// 操作符
-operator = {
-    openParen |
-    closeParen |
-    openBrace |
-    closeBrace |
-    eq |
-    semicolon
+// 操作符和运算符
+Operator = {
+    OpenParen |
+    CloseParen |
+    OpenBrace |
+    CloseBrace |
+    Equal |
+    Semicolon |
+    Comma |
+    Plus |
+    Minus |
+    Mul |
+    Div |
+    Mod |
+    Assign |
+    NotEqual |
+    Less |
+    Greater |
+    LessEqual |
+    GreaterEqual |
+    Not |
+    And |
+    Or |
+    OpenBracket |
+    CloseBracket
 }
 
-semicolon = { ";" }
+Plus = { "+" }
 
-eq = {
- "="
-}
+Minus = { "-" }
 
-openParen = {
+Mul = { "*" }
+
+Div = { "/" }
+
+Mod = { "%" }
+
+Assign = { "=" }
+
+Semicolon = { ";" }
+
+Equal = @{ "==" }
+
+NotEqual = @{ "!=" }
+
+Less = { "<" }
+
+Greater = { ">" }
+
+LessEqual = @{ "<=" }
+
+GreaterEqual = @{ ">=" }
+
+Not = { "!" }
+
+And = @{ "&&" }
+
+Or = @{ "||" }
+
+OpenParen = {
     "("
 }
-closeParen = {
+CloseParen = {
     ")"
 }
 
-openBrace = {
+OpenBrace = {
     "{"
 }
-closeBrace = {
+CloseBrace = {
     "}"
 }
 
-test = { "test "}
+OpenBracket = { "[" }
+CloseBracket = { "]" }
+
+Comma = { "," }

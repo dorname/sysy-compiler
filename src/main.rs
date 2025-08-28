@@ -1,4 +1,5 @@
 mod lexer;
+mod utils;
 use lexer::*;
 
 const BASE_PATH:&str = "tests/";
