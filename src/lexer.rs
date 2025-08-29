@@ -265,7 +265,7 @@ impl From<Pair<'_, Rule>> for Token {
 
 #[cfg(test)]
 mod tests {
-    use crate::BASE_PATH;
+    const BASE_PATH: &str = "tests/";
     use crate::lexer::IntegerConst::{Hex, Octal};
     use super::*;
     #[test]

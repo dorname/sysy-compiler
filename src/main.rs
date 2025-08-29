@@ -1,19 +1,22 @@
 mod lexer;
 mod utils;
 use lexer::*;
-
-const BASE_PATH:&str = "tests/";
+use std::{env, fs};
 fn main() {
-    // let args:Vec<String> = std::env::args().collect();
-    // if args.len() < 2 {
-    //     eprintln!("Usage: {} <filename>", args[0]);
-    //     std::process::exit(1);
-    // }
-    //
-    // let filename = args[1].to_string()+BASE_PATH;
-    let filename = BASE_PATH.to_string() + "lab1_example1.sysy";
+    // 收集命令行参数
+    let args: Vec<String> = env::args().collect();
 
-    let file = std::fs::read_to_string(filename).expect("Failed to read file");
+    // 检查是否提供了文件名
+    if args.len() < 2 {
+        eprintln!("Usage: {} <filename>", args[0]);
+        std::process::exit(1);
+    }
+
+    // 获取文件名
+    let filename = &args[1];
+
+    // 读取输入文件
+    let input = fs::read_to_string(filename).expect("Failed to read file");
     
-    tokenize(&file);
+    tokenize(&input);
 }
