@@ -43,7 +43,7 @@ Else = @{ "else" ~ !ident_tail }
 While = @{ "while" ~ !ident_tail }
 Break = @{ "break" ~ !ident_tail }
 Continue = @{ "continue" ~ !ident_tail }
-Return = @{ "return" }
+Return = @{ "return" ~ !ident_tail }
 Flow = { If | Else | While | Break | Continue | Return }
 
 // 关键字
@@ -70,11 +70,12 @@ IntegerConst = {
 
 // 操作符和运算符
 Operator = {
-    OpenParen |
-    CloseParen |
-    OpenBrace |
-    CloseBrace |
     Equal |
+    NotEqual |
+    LessEqual |
+    GreaterEqual |
+    And |
+    Or |
     Semicolon |
     Comma |
     Plus |
@@ -83,16 +84,15 @@ Operator = {
     Div |
     Mod |
     Assign |
-    NotEqual |
     Less |
     Greater |
-    LessEqual |
-    GreaterEqual |
     Not |
-    And |
-    Or |
     OpenBracket |
-    CloseBracket
+    CloseBracket |
+    OpenParen |
+    CloseParen |
+    OpenBrace |
+    CloseBrace
 }
 
 Plus = { "+" }
