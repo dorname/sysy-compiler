@@ -37,14 +37,14 @@ pub enum IntegerConst {
 }
 
 impl Display for IntegerConst {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            IntegerConst::Hex(s) => {
+            Hex(s) => {
                 // 十六进制转十进制
                 let s = hex_to_int(s).expect("invalid hex");
                 write!(f, "INTEGER_CONST {}", s)
             },
-            IntegerConst::Octal(s) =>{
+            Octal(s) =>{
                 let s = oct_to_int(s).expect("invalid hex");
                 write!(f, "INTEGER_CONST {}", s)
             },
@@ -64,7 +64,7 @@ pub enum Flow {
 }
 
 impl Display for Flow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Flow::If => write!(f, "IF if"),
             Flow::Else => write!(f, "ELSE else"),
@@ -85,7 +85,7 @@ pub enum Type {
 }
 
 impl Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Int => write!(f, "INT int"),
             Type::Float => write!(f, "FLOAT float"),
@@ -123,7 +123,7 @@ pub enum Operator {
 }
 
 impl Display for Operator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Operator::Plus => write!(f, "PLUS +"),
             Operator::Minus => write!(f, "MINUS -"),
@@ -157,7 +157,7 @@ fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
     match ExpressionParser::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
         Err(e) => {
-            let line_no =  if let pest::error::LineColLocation::Pos((line,col)) = e.line_col {
+            let line_no =  if let pest::error::LineColLocation::Pos((line,_)) = e.line_col {
                 line
             } else {
                 0
