@@ -1,6 +1,6 @@
 
 // 顶层规则名：
-File = { START ~ ( Type | Flow | WS | Operator | Identifier | IntegerConst | ErrorSyntax )+ ~ END }
+File = { START ~ ( WS | Type | Flow  | Operator | IntegerConst | Identifier  | ErrorSyntax )+ ~ END }
 
 START = _{ SOI }
 END = _{ EOI }
@@ -25,8 +25,10 @@ LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 // 1、"/*" 开头直到出现"*/"为一个块注释
 // 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
 BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/"* }
+// 换行符
+Line = _{ "\\r\\n" | "\\n" | "\\r" }
 // 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
-WS = _{ " " | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
+WS = _{  ( " " | Line | "\\t" | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT )+ }
 
 // 数据类型
 Int = @{ "int" ~ !ident_tail}

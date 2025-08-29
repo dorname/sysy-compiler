@@ -346,6 +346,63 @@ mod tests {
     }
 
     #[test]
+    fn test_lab1_example7(){
+        let filename = BASE_PATH.to_string() + "lab1_example7.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example8(){
+        let filename = BASE_PATH.to_string() + "lab1_example8.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example9(){
+        let filename = BASE_PATH.to_string() + "lab1_example9.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example10(){
+        let filename = BASE_PATH.to_string() + "lab1_example10.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example11(){
+        let filename = BASE_PATH.to_string() + "lab1_example11.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example12(){
+        let filename = BASE_PATH.to_string() + "lab1_example12.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example13(){
+        let filename = BASE_PATH.to_string() + "lab1_example13.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example14(){
+        let filename = BASE_PATH.to_string() + "lab1_example14.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+
+    #[test]
     #[ignore]
     fn test_eprintln() {
         eprintln!("{}",Operator::Plus);

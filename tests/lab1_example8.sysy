@@ -1,0 +1,1 @@
+int\r\nmain\t(\t)\r\n{\r\n\tint\ta,b;c=0;\r\n\ta=b+1;return\tc;\r\n}
