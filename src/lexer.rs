@@ -217,7 +217,7 @@ pub fn tokenize(input: &str)  {
             }
         }).collect::<Vec<(usize,Token)>>();
     for (line,token) in line_tokens {
-        if matches!(token,Token::ErrorSyntax(_)){
+        if matches!(token,Token::ErrorSyntax(_)) && !matches!(token,Token::ErrorSyntax(ErrorSyntax::UnKnownError(_))){
             eprintln!("Error type A at Line {}:{}.",line,token);
         }else {
             eprintln!("{} at Line {}.",token,line);

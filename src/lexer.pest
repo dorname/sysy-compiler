@@ -14,9 +14,9 @@ END = _{ EOI }
 // 6、其他不知名的错误
 VarError = @{ ASCII_DIGIT~ ident_tail* }
 InvalidHex = @{ ("0x" | "0X") ~ (!ident_tail ~ !WS ~ ANY)* }
-InvalidOctal = @{ "0" ~ (ASCII_DIGIT | ident_tail)+ }
+InvalidOctal = @{ "0" ~ (ANY ~ !OCTAL_DIT ~ ANY)+ }
 InvalidInteger = @{ ASCII_DIGIT+ ~ ident_tail+ }
-InvalidOperator = @{ "#" | "&" | "|" | ("0x" | "0X") }
+InvalidOperator = @{ "#" | "&" | "|" | "~" |("0x" | "0X") }
 UnKnownError = @{ !EOI ~ ANY }
 
 ErrorSyntax = { VarError | InvalidHex | InvalidOctal | InvalidInteger | InvalidOperator | UnKnownError }
