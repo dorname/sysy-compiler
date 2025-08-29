@@ -24,7 +24,7 @@ LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 // 块注释匹配规则
 // 1、"/*" 开头直到出现"*/"为一个块注释
 // 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
-BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/"* }
 // 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
 WS = _{ " " | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
 

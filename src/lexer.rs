@@ -339,6 +339,13 @@ mod tests {
     }
 
     #[test]
+    fn test_lab1_example6(){
+        let filename = BASE_PATH.to_string() + "lab1_example6.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
     #[ignore]
     fn test_eprintln() {
         eprintln!("{}",Operator::Plus);
