@@ -1,6 +1,0 @@
-/* head comment: != == && || <= >= {} [] () ; , */
-int main() {
-  // line comment: a<=b && c!=d || e==f
-  int a = 0xFF; /* inner block: { [ ( ) ] } ; , ! == */
-  a = a + 1; // tail
-}

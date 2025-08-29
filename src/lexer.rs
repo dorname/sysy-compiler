@@ -36,16 +36,22 @@ impl Display for Token {
 #[derive(Debug, PartialEq)]
 pub enum ErrorSyntax {
     VarError(String),
+    InvalidHex(String),
+    InvalidOctal(String),
+    InvalidInteger(String),
+    InvalidOperator(String),
     UnKnownError(String),
-    OperatorError(String),
 }
 
 impl Display for ErrorSyntax {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ErrorSyntax::VarError(s) => write!(f, "VAR_ERROR {}", s),
+            ErrorSyntax::InvalidHex(s) => write!(f, "INVALID_HEX {}", s),
+            ErrorSyntax::InvalidOctal(s) => write!(f, "INVALID_OCTAL {}", s),
+            ErrorSyntax::InvalidInteger(s) => write!(f, "INVALID_INTEGER {}", s),
+            ErrorSyntax::InvalidOperator(s) => write!(f, "INVALID_OPERATOR {}", s),
             ErrorSyntax::UnKnownError(s) => write!(f, "UN_KNOWN_ERROR {}", s),
-            ErrorSyntax::OperatorError(s) => write!(f, "OPERATOR_ERROR {}", s),
         }
     }
 }
@@ -286,8 +292,11 @@ impl From<Pair<'_, Rule>> for Token {
                 let op = p.into_inner().next().expect("Operator must have one child");
                 match op.as_rule() {
                     Rule::VarError => Token::ErrorSyntax(ErrorSyntax::VarError(op.as_str().to_string())),
+                    Rule::InvalidHex => Token::ErrorSyntax(ErrorSyntax::InvalidHex(op.as_str().to_string())),
+                    Rule::InvalidOctal => Token::ErrorSyntax(ErrorSyntax::InvalidOctal(op.as_str().to_string())),
+                    Rule::InvalidInteger => Token::ErrorSyntax(ErrorSyntax::InvalidInteger(op.as_str().to_string())),
+                    Rule::InvalidOperator => Token::ErrorSyntax(ErrorSyntax::InvalidOperator(op.as_str().to_string())),
                     Rule::UnKnownError => Token::ErrorSyntax(ErrorSyntax::UnKnownError(op.as_str().to_string())),
-                    Rule::OperatorError => Token::ErrorSyntax(ErrorSyntax::OperatorError(op.as_str().to_string())),
                     _ => panic!("expected error syntax,found {}", op.as_str()),
                 }
             },
@@ -305,98 +314,98 @@ mod tests {
     use super::*;
     #[test]
     fn test_lab1_example1() {
-        let filename = BASE_PATH.to_string() + "lab1_example1.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example1.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example2() {
-        let filename = BASE_PATH.to_string() + "lab1_example2.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example2.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example3() {
-        let filename = BASE_PATH.to_string() + "lab1_example3.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example3.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example4() {
-        let filename = BASE_PATH.to_string() + "lab1_example4.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example4.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example5(){
-        let filename = BASE_PATH.to_string() + "lab1_example5.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example5.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example6(){
-        let filename = BASE_PATH.to_string() + "lab1_example6.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example6.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example7(){
-        let filename = BASE_PATH.to_string() + "lab1_example7.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example7.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example8(){
-        let filename = BASE_PATH.to_string() + "lab1_example8.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example8.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example9(){
-        let filename = BASE_PATH.to_string() + "lab1_example9.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example9.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example10(){
-        let filename = BASE_PATH.to_string() + "lab1_example10.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example10.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example11(){
-        let filename = BASE_PATH.to_string() + "lab1_example11.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example11.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example12(){
-        let filename = BASE_PATH.to_string() + "lab1_example12.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example12.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example13(){
-        let filename = BASE_PATH.to_string() + "lab1_example13.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example13.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
 
     #[test]
     fn test_lab1_example14(){
-        let filename = BASE_PATH.to_string() + "lab1_example14.sysy";
+        let filename = BASE_PATH.to_string() + "lab1_example14.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }

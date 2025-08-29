@@ -1,34 +1,39 @@
 
 // 顶层规则名：
-File = { START ~ ( WS | Type | Flow  | Operator | IntegerConst | Identifier  | ErrorSyntax )+ ~ END }
+File = { START ~ (  WS | Type | Flow  | Operator | IntegerConst | Identifier  | ErrorSyntax )+ ~ END }
 
 START = _{ SOI }
 END = _{ EOI }
 
 // 错误规则定义
 // 1、变量名错误：以数字开头的变量名
-// 2、非法操作符
-// 3、不知名的错误
+// 2、无效的十六进制
+// 3、无效的八进制
+// 4、无效的整数
+// 5、无效的操作符
+// 6、其他不知名的错误
 VarError = @{ ASCII_DIGIT~ ident_tail* }
+InvalidHex = @{ ("0x" | "0X") ~ (!ident_tail ~ !WS ~ ANY)* }
+InvalidOctal = @{ "0" ~ (ASCII_DIGIT | ident_tail)+ }
+InvalidInteger = @{ ASCII_DIGIT+ ~ ident_tail+ }
+InvalidOperator = @{ "#" | "&" | "|" | ("0x" | "0X") }
 UnKnownError = @{ !EOI ~ ANY }
-OperatorError = @{ (!Operator ~ ANY)+ }
 
-ErrorSyntax = { VarError  | OperatorError | UnKnownError }
+ErrorSyntax = { VarError | InvalidHex | InvalidOctal | InvalidInteger | InvalidOperator | UnKnownError }
 
 
 // 行注释匹配规则
 // 1、"//" 开头直到换行为一个行注释
 // 2、 换行前可以是除换行符号外的任意字符。
 // 注意：这里 (!NEWLINE ~ ANY)*表示下一个字符不是换行的前提下后面可以匹配任务内容
-LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ ( NEWLINE | EOI ) }
 // 块注释匹配规则
 // 1、"/*" 开头直到出现"*/"为一个块注释
 // 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
-BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/"* }
+BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 // 换行符
-Line = _{ "\\r\\n" | "\\n" | "\\r" }
 // 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
-WS = _{  ( " " | Line | "\\t" | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT )+ }
+WS = _{  ( " " | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT )+ }
 
 // 数据类型
 Int = @{ "int" ~ !ident_tail}
@@ -52,8 +57,8 @@ Keyword = {
 }
 
 // —— 标识符与关键字 ——
-ident_head = _{ ASCII_ALPHA | "_" }
-ident_tail = _{ ASCII_ALPHANUMERIC | "_" }
+ident_head = _{ "_" | ASCII_ALPHA }
+ident_tail = _{ "_" | ASCII_ALPHANUMERIC }
 // Identifier : 以下划线或字母开头，仅包含下划线、英文字母大小写、阿拉伯数字
 Identifier = @{ !Keyword ~ ident_head ~ ident_tail* }  // 至少1字符，且不吃关键字
 
@@ -61,38 +66,39 @@ Identifier = @{ !Keyword ~ ident_head ~ ident_tail* }  // 至少1字符，且不
 // IntegerConst : 数字常量，包含十进制数，0开头的八进制数，0x或0X开头的十六进制数
 HEX_DIT = _{ '0'..'9' | 'a'..'f' | 'A'..'F' }
 OCTAL_DIT = _{'0'..'7'}
-Hex = @{ ( "0x" | "0X") ~ HEX_DIT+ }
-Octal = @{ "0" ~ OCTAL_DIT+ }
-Dec = @{ "0" | ( ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* ) }
+Hex = @{ ( "0x" | "0X") ~ HEX_DIT+ ~ !ident_tail }
+Octal = @{ "0" ~ OCTAL_DIT+ ~ !ident_tail }
+Dec = @{ ( "0" | ( ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* ) ) ~ !ident_tail }
 IntegerConst = {
     Hex | Octal | Dec
 }
 
 // 操作符和运算符
+// 注意：长操作符必须在短操作符之前，以避免被部分匹配
 Operator = {
-    Equal |
-    NotEqual |
-    LessEqual |
-    GreaterEqual |
-    And |
-    Or |
-    Semicolon |
-    Comma |
-    Plus |
-    Minus |
-    Mul |
-    Div |
-    Mod |
-    Assign |
-    Less |
-    Greater |
-    Not |
-    OpenBracket |
-    CloseBracket |
-    OpenParen |
-    CloseParen |
-    OpenBrace |
-    CloseBrace
+    Equal |        // ==
+    NotEqual |     // !=
+    LessEqual |    // <=
+    GreaterEqual | // >=
+    And |          // &&
+    Or |           // ||
+    Assign |       // =
+    Less |         // <
+    Greater |      // >
+    Plus |         // +
+    Minus |        // -
+    Mul |          // *
+    Div |          // /
+    Mod |          // %
+    Not |          // !
+    Semicolon |    // ;
+    Comma |        // ,
+    OpenBracket |  // [
+    CloseBracket | // ]
+    OpenParen |    // (
+    CloseParen |   // )
+    OpenBrace |    // {
+    CloseBrace     // }
 }
 
 Plus = { "+" }
