@@ -14,8 +14,11 @@ pub enum Token {
     Operator(Operator),
     Type(Type),
     Flow(Flow),
-    IntegerConst(IntegerConst)
+    IntegerConst(IntegerConst),
+    ErrorSyntax(ErrorSyntax)
 }
+
+
 
 impl Display for Token {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -25,6 +28,24 @@ impl Display for Token {
             Token::Type(t) => write!(f, "{}", t),
             Token::Flow(flow) => write!(f, "{}", flow),
             Token::IntegerConst(i) => write!(f, "{}", i),
+            Token::ErrorSyntax(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ErrorSyntax {
+    VarError(String),
+    UnKnownError(String),
+    OperatorError(String),
+}
+
+impl Display for ErrorSyntax {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorSyntax::VarError(s) => write!(f, "VAR_ERROR {}", s),
+            ErrorSyntax::UnKnownError(s) => write!(f, "UN_KNOWN_ERROR {}", s),
+            ErrorSyntax::OperatorError(s) => write!(f, "OPERATOR_ERROR {}", s),
         }
     }
 }
@@ -156,16 +177,17 @@ fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
 
     match ExpressionParser::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
-        Err(e) => {
-            let line_no =  if let pest::error::LineColLocation::Pos((line,_)) = e.line_col {
-                line
-            } else {
-                0
-            };
-            // 提取e中的错误信息
-            // 只取错误信息，不要自动生成的“期望 …”提示
-            let err_msg = e.to_string();
-            eprintln!("Error type A at Line {}:\n {}.",line_no,err_msg);
+        Err(_) => {
+            eprintln!("error parse");
+            // let line_no =  if let pest::error::LineColLocation::Pos((line,_)) = e.line_col {
+            //     line
+            // } else {
+            //     0
+            // };
+            // // 提取e中的错误信息
+            // // 只取错误信息，不要自动生成的“期望 …”提示
+            // let err_msg = e.to_string();
+            // eprintln!("Error type A at Line {}:\n {}.",line_no,err_msg);
             None
         }
     }
@@ -189,7 +211,11 @@ pub fn tokenize(input: &str)  {
             }
         }).collect::<Vec<(usize,Token)>>();
     for (line,token) in line_tokens {
-        eprintln!("{} at Line {}.",token,line);
+        if matches!(token,Token::ErrorSyntax(_)){
+            eprintln!("Error type A at Line {}:{}.",line,token);
+        }else {
+            eprintln!("{} at Line {}.",token,line);
+        }
     }
 }
 
@@ -256,6 +282,15 @@ impl From<Pair<'_, Rule>> for Token {
                     _ => panic!("expected integer const,found {}", op.as_str()),
                 }
             },
+            Rule::ErrorSyntax => {
+                let op = p.into_inner().next().expect("Operator must have one child");
+                match op.as_rule() {
+                    Rule::VarError => Token::ErrorSyntax(ErrorSyntax::VarError(op.as_str().to_string())),
+                    Rule::UnKnownError => Token::ErrorSyntax(ErrorSyntax::UnKnownError(op.as_str().to_string())),
+                    Rule::OperatorError => Token::ErrorSyntax(ErrorSyntax::OperatorError(op.as_str().to_string())),
+                    _ => panic!("expected error syntax,found {}", op.as_str()),
+                }
+            },
             _ => {
                 Token::Identifier(p.as_str().to_string())
             }
@@ -292,6 +327,13 @@ mod tests {
     #[test]
     fn test_lab1_example4() {
         let filename = BASE_PATH.to_string() + "lab1_example4.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example5(){
+        let filename = BASE_PATH.to_string() + "lab1_example5.sysy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }

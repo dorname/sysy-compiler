@@ -1,9 +1,20 @@
 
 // 顶层规则名：
-File = { START ~ ( Type | Flow | WS | Operator | Identifier | IntegerConst )+ ~ END }
+File = { START ~ ( Type | Flow | WS | Operator | Identifier | IntegerConst | ErrorSyntax )+ ~ END }
 
 START = _{ SOI }
 END = _{ EOI }
+
+// 错误规则定义
+// 1、变量名错误：以数字开头的变量名
+// 2、非法操作符
+// 3、不知名的错误
+VarError = @{ ASCII_DIGIT~ ident_tail* }
+UnKnownError = @{ !EOI ~ ANY }
+OperatorError = @{ (!Operator ~ ANY)+ }
+
+ErrorSyntax = { VarError  | OperatorError | UnKnownError }
+
 
 // 行注释匹配规则
 // 1、"//" 开头直到换行为一个行注释
@@ -15,7 +26,7 @@ LINE_COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 // 2、 "*/"块结束标识前可以是除结束标识外的任意字符。
 BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 // 自动跳过空白：名字必须叫 WHITESPACE 且是 silent 规则（带 _）
-WS = _{ " " | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
+WS = _{ " " | "\t" | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
 
 // 数据类型
 Int = @{ "int" ~ !ident_tail}
