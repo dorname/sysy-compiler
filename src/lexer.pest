@@ -18,18 +18,18 @@ BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 WS = _{ " " | NEWLINE  | LINE_COMMENT | BLOCK_COMMENT }
 
 // 数据类型
-Int = @{ "int" }
-Float = @{ "float" }
-Const = @{ "const" }
-Void = @{"void"}
+Int = @{ "int" ~ !ident_tail}
+Float = @{ "float" ~ !ident_tail }
+Const = @{ "const" ~ !ident_tail }
+Void = @{"void" ~ !ident_tail }
 Type = { Int | Float | Const | Void }
 
 // 流程关键字
-If = @{ "if" }
-Else = @{ "else" }
-While = @{ "while" }
-Break = @{ "break" }
-Continue = @{ "continue" }
+If = @{ "if" ~ !ident_tail }
+Else = @{ "else" ~ !ident_tail }
+While = @{ "while" ~ !ident_tail }
+Break = @{ "break" ~ !ident_tail }
+Continue = @{ "continue" ~ !ident_tail }
 Return = @{ "return" }
 Flow = { If | Else | While | Break | Continue | Return }
 
@@ -37,10 +37,13 @@ Flow = { If | Else | While | Break | Continue | Return }
 Keyword = {
      Type | Flow
 }
+
+// —— 标识符与关键字 ——
+ident_head = _{ ASCII_ALPHA | "_" }
+ident_tail = _{ ASCII_ALPHANUMERIC | "_" }
 // Identifier : 以下划线或字母开头，仅包含下划线、英文字母大小写、阿拉伯数字
-Identifier = @{
-    ("_"|ASCII_ALPHA) ~ (ASCII_ALPHANUMERIC | "_" )*
-}
+Identifier = @{ !Keyword ~ ident_head ~ ident_tail* }  // 至少1字符，且不吃关键字
+
 
 // IntegerConst : 数字常量，包含十进制数，0开头的八进制数，0x或0X开头的十六进制数
 HEX_DIT = _{ '0'..'9' | 'a'..'f' | 'A'..'F' }

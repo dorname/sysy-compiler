@@ -1,4 +1,4 @@
-use pest::iterators::Pair;
+use pest::iterators::{Pair, Pairs};
 use std::fmt::{Display, Formatter};
 use pest::Parser;
 use pest_derive::Parser;
@@ -14,7 +14,7 @@ pub enum Token {
     Operator(Operator),
     Type(Type),
     Flow(Flow),
-    IntegerConst(IntegerConst),
+    IntegerConst(IntegerConst)
 }
 
 impl Display for Token {
@@ -152,25 +152,42 @@ impl Display for Operator {
     }
 }
 
+fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
+
+    match ExpressionParser::parse(Rule::File, input) {
+        Ok(pairs) => Some(pairs),
+        Err(e) => {
+            let line_no =  if let pest::error::LineColLocation::Pos((line,col)) = e.line_col {
+                line
+            } else {
+                0
+            };
+            // 提取e中的错误信息
+            // 只取错误信息，不要自动生成的“期望 …”提示
+            let err_msg = e.to_string();
+            eprintln!("Error type A at Line {}:\n {}.",line_no,err_msg);
+            None
+        }
+    }
+}
+
 pub fn tokenize(input: &str)  {
-    let pair = ExpressionParser::parse(Rule::File, input)
-        .unwrap_or_else(|e| {
-                let line_no =  if let pest::error::LineColLocation::Pos((line,col)) = e.line_col {
-                    line
-                } else {
-                     0
-                };
-                eprintln!("Error type A at Line {}: Mysterious character \"~\".",line_no);
-                panic!("Parsing error: {}", e)
-            }
-         )
+    let parse_result = parse_file(input);
+    if parse_result.is_none() {
+        return;
+    }
+    let pair =
+    parse_result.unwrap()
         .next()
         .unwrap(); // 取第一个匹配
     let line_tokens= pair.into_inner()
-        .map(|p| {
-            // eprintln!("{:>4} | {:?}",p.line_col().0,p);
-            (p.line_col().0,Token::from(p))
-         }).collect::<Vec<(usize,Token)>>();
+        .filter_map(|p|{
+            if p.as_rule() == Rule::EOI {
+                None
+            } else {
+                Some((p.line_col().0,Token::from(p)))
+            }
+        }).collect::<Vec<(usize,Token)>>();
     for (line,token) in line_tokens {
         eprintln!("{} at Line {}.",token,line);
     }
@@ -201,6 +218,8 @@ impl From<Pair<'_, Rule>> for Token {
                     Rule::CloseParen => Token::Operator(Operator::CloseParen),
                     Rule::OpenBrace => Token::Operator(Operator::OpenBrace),
                     Rule::CloseBrace => Token::Operator(Operator::CloseBrace),
+                    Rule::OpenBracket => Token::Operator(Operator::OpenBracket),
+                    Rule::CloseBracket => Token::Operator(Operator::CloseBracket),
                     Rule::Comma => Token::Operator(Operator::Comma),
                     Rule::Semicolon => Token::Operator(Operator::Semicolon),
                     _ => panic!("expected operator,found {}", op.as_str()),
@@ -259,6 +278,20 @@ mod tests {
     #[test]
     fn test_lab1_example2() {
         let filename = BASE_PATH.to_string() + "lab1_example2.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example3() {
+        let filename = BASE_PATH.to_string() + "lab1_example3.sysy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        tokenize(&file);
+    }
+
+    #[test]
+    fn test_lab1_example4() {
+        let filename = BASE_PATH.to_string() + "lab1_example4.sysy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         tokenize(&file);
     }
