@@ -1,6 +1,6 @@
 
 // 顶层规则名：
-File = { START ~ (  WS | Type | Flow  | Operator | IntegerConst | Identifier  | ErrorSyntax )+ ~ END }
+File = { START ~ (  WS | Type | Flow  | Operator | Identifier | IntegerConst | ErrorSyntax )+ ~ END }
 
 START = _{ SOI }
 END = _{ EOI }

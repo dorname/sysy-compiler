@@ -1,11 +1,9 @@
 int main(){
-/*
-NormalTest5.sy：100（All correct. Congratulations!）
-NormalTest7.sy：100（All correct. Congratulations!）
-NormalTest9.sy：100（All correct. Congratulations!）
-NormalTest1.sy：100（All correct. Congratulations!）
-NormalTest10.sy：100（All correct. Congratulations!
-  int i = 1;
-  int j = ~i;
-  int z = #j;
+
+    int a123_=5;
+    int b[10];
+    int c;
+    int d=a*2;
+
+    return 0;
 }
