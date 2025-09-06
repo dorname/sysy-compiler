@@ -1,1 +1,0 @@
-int a=123abc; int b=0x; int c=0129; int d=0xDEAD; int e=0Xbeef; int z=0;

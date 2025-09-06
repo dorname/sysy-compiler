@@ -1,9 +1,0 @@
-int main(){
-
-    int a123_=5;
-    int b[10];
-    int c;
-    int d=a*2;
-
-    return 0;
-}
