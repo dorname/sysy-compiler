@@ -1,15 +1,15 @@
 use pest::iterators::Pair;
 use std::io;
-use std::io::Write;
+use std::io::{stdout, Write};
 use pest::Parser;
 use pest::iterators::Pairs;
 use pest_derive::Parser;
 
 #[derive(Parser)]
 #[grammar = "pests/parser.pest"]
-pub struct Formatter;
+pub struct FParser;
 fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
-    match Formatter::parse(Rule::File, input) {
+    match FParser::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
         Err(_) => {
             None
@@ -17,83 +17,162 @@ fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
     }
 }
 
-pub fn fmt(input: &str){
-    let _ = format_code(input, io::stdout());
+pub struct Formatter<'a,W: Write> {
+    deep: usize,
+    input: &'a str,
+    writer: &'a mut W,
+    output: String,
+    err_output:String,
 }
 
-pub fn format_code<W:Write>(input: &str,mut w: W) -> io::Result<()> {
-    let pairs = parse_file(input);
-    if pairs.is_none() {
-        return Ok(());
-    }
-    // 把File规则的第一个pair拿出来
-    let pairs = pairs.unwrap().next().unwrap();
-    // 继续把File规则的内容拿出来
-    let pairs = pairs.into_inner().next().unwrap();
-    // 把编译单元的内容拿出来
-    let pairs = pairs.into_inner();
-    let mut fmt_str: String = String::new();
-    dbg!(&pairs);
-    fn fmt(pair: Pair<Rule>,fmt_str: &mut String) {
-        match pair.as_rule() {
-            Rule::FuncDef => {
-                let inner = pair.into_inner().next().unwrap();
-                fmt(inner,fmt_str);
-            }
-            Rule::Decl => {
-                let inner = pair.into_inner().next().unwrap();
-                fmt(inner,fmt_str);
-
-            }
-            Rule::FuncType => {
-                let inner = pair.into_inner().next().unwrap();
-                fmt(inner,fmt_str);
-            }
-            Rule::ConstDecl => {
-                let inner = pair.into_inner().next().unwrap();
-                fmt(inner,fmt_str);
-            },
-            Rule::Semicolon => {
-                // 如果结尾是"return ",则去掉空格再添加分号
-                // 否则直接添加分号和换行
-                if fmt_str.ends_with("return ") {
-                    fmt_str.pop();
-                    fmt_str.push(';');
-                } else {
-                    let input = format!("{}\n",pair.as_str());
-                    fmt_str.push_str(&input);
-                }
-            }
-            Rule::Plus |
-            Rule::Minus |
-            Rule::Mul |
-            Rule::Div |
-            Rule::Mod |
-            Rule::Assign |
-            Rule::Equal |
-            Rule::NotEqual |
-            Rule::Less |
-            Rule::LessEqual |
-            Rule::Greater |
-            Rule::GreaterEqual |
-            Rule::And |
-            Rule::Or |
-            Rule::Not => {
-                let input = format!(" {} ",pair.as_str());
-                fmt_str.push_str(&input);
-            }
-            _ => {
-                let input = format!("{} ",pair.as_str());
-                fmt_str.push_str(&input);
-            }
+impl<'a,W:Write> Formatter<'a, W>{
+    pub fn new(deep: usize, input: &'a str, writer: &'a mut W) -> Self {
+        Self {
+            deep,
+            input,
+            output: String::new(),
+            err_output: String::new(),
+            writer,
         }
     }
-    pairs.for_each(|pair| {
-        let _ = fmt(pair,&mut fmt_str);
-    });
-    writeln!(w, "{}", fmt_str)?;
-    Ok(())
+
+    pub fn fmt(&mut self,pair: Pair<Rule>) {
+        fn build_next_line_str(count:usize)-> String {
+            format!("\n{0:1$}","    ", count)
+        }
+        match pair.as_rule() {
+                Rule::FuncDef |
+                Rule::Decl |
+                Rule::VarDecl |
+                Rule::VarDef |
+                Rule::ConstDecl |
+                Rule::ConstDef |
+                Rule::ArrayDims |
+                Rule::ConstInitVal |
+                Rule::FuncFParams |
+                Rule::FuncFParam |
+                Rule::InitVal |
+                Rule::BlockItem |
+                Rule::Stmt |
+                Rule::LVal |
+                Rule::PrimaryExp |
+                Rule::CallExp |
+                Rule::FuncRParams |
+                Rule::UnaryExp |
+                Rule::MulExp |
+                Rule::AddExp |
+                Rule::RelExp |
+                Rule::EqExp |
+                Rule::LAndExp |
+                Rule::LOrExp |
+                Rule::Block=> {
+                    let inner = pair.into_inner();
+                    for p in inner {
+                        self.fmt(p);
+                    }
+                }
+                Rule::Exp |
+                Rule::Cond |
+                Rule::ConstExp=> {
+                    let p = pair.into_inner().next().unwrap();
+                    self.fmt(p);
+                }
+                Rule::Semicolon => {
+                    // 如果结尾是"return ",则去掉空格再添加分号
+                    // 否则直接添加分号和换行
+                    if self.output.ends_with(" ") {
+                        self.output.pop();
+                        self.output.push_str(";");
+                        self.output.push_str(&build_next_line_str(self.deep));
+                    } else {
+                        let input = format!("{}",pair.as_str());
+                        self.output.push_str(&input);
+                        self.output.push_str(&build_next_line_str(self.deep));
+                    }
+                }
+                Rule::Plus |
+                Rule::Minus |
+                Rule::Mul |
+                Rule::Div |
+                Rule::Mod |
+                Rule::Assign |
+                Rule::Equal |
+                Rule::NotEqual |
+                Rule::Less |
+                Rule::LessEqual |
+                Rule::Greater |
+                Rule::GreaterEqual |
+                Rule::And |
+                Rule::Or |
+                Rule::Not => {
+                    let input = format!(" {} ",pair.as_str());
+                    self.output.push_str(&input);
+                }
+                Rule::UnaryOp |
+                Rule::Ident |
+                Rule::OpenParen |
+                Rule::OpenBracket |
+                Rule::CloseBracket => {
+                    let input = format!("{}",pair.as_str());
+                    self.output.push_str(&input);
+                }
+                Rule::OpenBrace => {
+                    let input = format!("{}",pair.as_str());
+                    self.deep+=1;
+                    self.output.push_str(&input);
+                    self.output.push_str(&build_next_line_str(self.deep));
+
+                }
+                Rule::CloseBrace => {
+                    self.deep-=1;
+                    let input = format!("{}",pair.as_str());
+                    let pop_count = self.deep*4;
+                    for _ in 0..pop_count {
+                        self.output.pop();
+                    }
+                    self.output.push_str(&input);
+                }
+                Rule::ErrorStmt => {
+                    let input = format!("Error type A at Line {}: {}.\n",pair.line_col().0,pair.as_str());
+                    self.err_output.push_str(&input);
+                }
+                _ => {
+                    let input = format!("{} ",pair.as_str());
+                    self.output.push_str(&input);
+                }
+        }
+    }
+    pub fn format_code(&mut self) -> io::Result<()> {
+        let pairs = parse_file(self.input);
+        if pairs.is_none() {
+            return Ok(());
+        }
+        // 把File规则的第一个pair拿出来
+        let pairs = pairs.unwrap().next().unwrap();
+        // 继续把File规则的内容拿出来
+        let pairs = pairs.into_inner().next().unwrap();
+        // 把编译单元的内容拿出来
+        let pairs = pairs.into_inner();
+        // dbg!(&pairs);
+        pairs.for_each(|pair| {
+            self.fmt(pair);
+        });
+        if self.err_output.len() != 0 {
+            writeln!(self.writer, "{}", self.err_output)?;
+        }else {
+            writeln!(self.writer, "{}", self.output)?;
+        }
+        Ok(())
+    }
 }
+
+pub fn fmt(input: &str){
+    let mut binding = stdout();
+    let mut formatter = Formatter::new(1usize, input, &mut binding);
+    formatter.format_code().unwrap();
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -103,9 +182,11 @@ mod tests {
     #[test]
     fn test_format_code() {
         // 1、把内容输出内存缓冲区
-        let filename = FILE_PATH.to_string() + "lab2_example2.txt";
+        let filename = FILE_PATH.to_string() + "lab2_example1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = format_code(&file, io::stdout());
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(1usize, &file, &mut binding);
+        formatter.format_code().unwrap();
     }
 
     #[test]
