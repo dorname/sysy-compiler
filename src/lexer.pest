@@ -1,6 +1,6 @@
 // ===== SysY grammar for pest =====
 // 顶层入口
-File        = { SOI ~ (KEYWORD | Operator | Ident | IntConst | ErrorStmt)+ ~ EOI }
+File        = { SOI ~ (WS | KEYWORD | Operator | Ident | IntConst | ErrorStmt)+ ~ EOI }
                      // 需在语义阶段保证常量可求值
 // ---------- 词法 ----------
 Ident       = { !KEYWORD ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -13,7 +13,7 @@ DecConst    = @{ '1'..'9' ~ ASCII_DIGIT* }
 
 LINE_COMMENT= _{ "//" ~ (!NEWLINE ~ ANY)* }     // 不吃换行，由 WHITESPACE 吃
 BLOCK_COMMENT=_{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
-WHITESPACE  = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
+WS  = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
 
 // ---------- 关键字（保留字） ----------
 Const    = { "const" }

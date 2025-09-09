@@ -1,0 +1,6 @@
+INT int at Line 1.
+IDENT x at Line 1.
+ASSIGN = at Line 1.
+INTEGER_CONST 0 at Line 1.
+INTEGER_CONST 8 at Line 1.
+SEMICOLON ; at Line 1.
