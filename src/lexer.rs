@@ -7,8 +7,8 @@ use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::Write;
 #[derive(Parser)]
-#[grammar = "lexer.pest"]
-pub struct ExpressionParser;
+#[grammar = "pests/lexer.pest"]
+pub struct Lexer;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -176,7 +176,7 @@ impl Display for Operator {
 }
 
 fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
-    match ExpressionParser::parse(Rule::File, input) {
+    match Lexer::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
         Err(_) => {
             None
@@ -684,15 +684,4 @@ mod tests {
         expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
         assert_eq!(actual, expected);
     }
-
-    // #[test]
-    // fn test_lab2() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "lab2_in1.txt";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let _ = tokenizer(&file, &mut buf);
-    //     let actual = String::from_utf8(buf).unwrap();
-    //     println!("{:?}", actual);
-    // }
 }

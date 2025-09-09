@@ -115,7 +115,7 @@ LVal        = { Ident ~ (OpenBracket ~ Exp ~ CloseBracket)* }
 PrimaryExp  = { OpenParen ~ Exp ~ CloseParen | LVal | Number }
 Number      = { IntConst }
 
-UnaryOp     = { Plus | Minus | Not }
+UnaryOp     = @{ Plus | Minus | Not }
 CallExp     = { Ident ~ OpenParen ~ FuncRParams? ~ CloseParen }      // 实参可选
 FuncRParams = { Exp ~ ( Comma ~ Exp )* }                  // 至少 1 个
 
@@ -141,7 +141,7 @@ DecConst    = @{ '1'..'9' ~ ASCII_DIGIT* }
 
 LINE_COMMENT= _{ "//" ~ (!NEWLINE ~ ANY)* }     // 不吃换行，由 WHITESPACE 吃
 BLOCK_COMMENT=_{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
-WHITESPACE  = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
+WHITESPACE    = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
 
 // ---------- 关键字（保留字） ----------
 Const    = { "const" }

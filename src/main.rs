@@ -1,7 +1,11 @@
 mod lexer;
 mod utils;
+mod format;
+
 use lexer::*;
 use std::{env, fs};
+use crate::format::fmt;
+
 fn main() {
     // 收集命令行参数
     let args: Vec<String> = env::args().collect();
@@ -18,5 +22,5 @@ fn main() {
     // 读取输入文件
     let input = fs::read_to_string(filename).expect("Failed to read file");
 
-    tokenize(&input);
+    fmt(&input);
 }
