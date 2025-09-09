@@ -1,0 +1,17 @@
+int Rect_size(int h, int w){
+    return h * w;
+}
+
+int Circ_size(int r) {
+    return 3 * r * r;
+}
+
+int main(){
+    int outnum = 0;
+    int size1 = Rect_size(10, 5);
+    int size2 = Circ_size(4);
+    if(size1 > size2){
+        outnum = 1;
+    }
+    return 0;
+}

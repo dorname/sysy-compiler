@@ -17,6 +17,6 @@ fn main() {
 
     // 读取输入文件
     let input = fs::read_to_string(filename).expect("Failed to read file");
-    
+
     tokenize(&input);
 }

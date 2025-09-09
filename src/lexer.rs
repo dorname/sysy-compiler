@@ -1,68 +1,64 @@
-use pest::iterators::{Pair, Pairs};
-use std::fmt::{Display, Formatter};
-use std::io;
-use pest::Parser;
-use pest_derive::Parser;
 use crate::lexer::IntegerConst::{Hex, Octal};
 use crate::utils::{hex_to_int, oct_to_int};
+use pest::Parser;
+use pest::iterators::{Pair, Pairs};
+use pest_derive::Parser;
+use std::fmt::{Display, Formatter};
+use std::io;
 use std::io::Write;
 #[derive(Parser)]
 #[grammar = "lexer.pest"]
 pub struct ExpressionParser;
 
-#[derive(Debug, PartialEq,Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Identifier(String),
     Operator(Operator),
-    Type(Type),
-    Flow(Flow),
+    BType(BType),
+    Keyword(Keyword),
     IntegerConst(IntegerConst),
-    ErrorSyntax(ErrorSyntax)
+    ErrorSyntax(ErrorSyntax),
+    Ignore(String),
 }
-
-
 
 impl Display for Token {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Token::Identifier(s) => write!(f, "IDENT {}", s),
             Token::Operator(op) => write!(f, "{}", op),
-            Token::Type(t) => write!(f, "{}", t),
-            Token::Flow(flow) => write!(f, "{}", flow),
+            Token::BType(t) => write!(f, "{}", t),
+            Token::Keyword(flow) => write!(f, "{}", flow),
             Token::IntegerConst(i) => write!(f, "{}", i),
             Token::ErrorSyntax(s) => write!(f, "{}", s),
+            Token::Ignore(s) => write!(f, "{s}"),
         }
     }
 }
 
-#[derive(Debug, PartialEq,Clone)]
+#[derive(Debug, PartialEq, Clone)]
+pub enum CompUnit {
+
+}
+
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum ErrorSyntax {
-    VarError(String),
-    InvalidHex(String),
-    InvalidOctal(String),
-    InvalidInteger(String),
-    InvalidOperator(String),
     UnKnownError(String),
 }
 
 impl Display for ErrorSyntax {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorSyntax::VarError(s) => write!(f, "VAR_ERROR {}", s),
-            ErrorSyntax::InvalidHex(s) => write!(f, "INVALID_HEX {}", s),
-            ErrorSyntax::InvalidOctal(s) => write!(f, "INVALID_OCTAL {}", s),
-            ErrorSyntax::InvalidInteger(s) => write!(f, "INVALID_INTEGER {}", s),
-            ErrorSyntax::InvalidOperator(s) => write!(f, "INVALID_OPERATOR {}", s),
             ErrorSyntax::UnKnownError(s) => write!(f, "UN_KNOWN_ERROR {}", s),
         }
     }
 }
 
-#[derive(Debug, PartialEq,Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum IntegerConst {
-    Hex(String), // 十六进制
+    Hex(String),   // 十六进制
     Octal(String), // 八进制
-    Dec(String), // 十进制
+    Dec(String),   // 十进制
 }
 
 impl Display for IntegerConst {
@@ -72,57 +68,55 @@ impl Display for IntegerConst {
                 // 十六进制转十进制
                 let s = hex_to_int(s).expect("invalid hex");
                 write!(f, "INTEGER_CONST {}", s)
-            },
-            Octal(s) =>{
+            }
+            Octal(s) => {
                 let s = oct_to_int(s).expect("invalid hex");
                 write!(f, "INTEGER_CONST {}", s)
-            },
+            }
             IntegerConst::Dec(s) => write!(f, "INTEGER_CONST {}", s),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Flow {
+pub enum Keyword {
     If,
     Else,
     While,
     Break,
     Continue,
     Return,
+    Const,
 }
 
-impl Display for Flow {
+impl Display for Keyword {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Flow::If => write!(f, "IF if"),
-            Flow::Else => write!(f, "ELSE else"),
-            Flow::While => write!(f, "WHILE while"),
-            Flow::Break => write!(f, "BREAK break"),
-            Flow::Continue => write!(f, "CONTINUE continue"),
-            Flow::Return => write!(f, "RETURN return"),
+            Keyword::If => write!(f, "IF if"),
+            Keyword::Else => write!(f, "ELSE else"),
+            Keyword::While => write!(f, "WHILE while"),
+            Keyword::Break => write!(f, "BREAK break"),
+            Keyword::Continue => write!(f, "CONTINUE continue"),
+            Keyword::Return => write!(f, "RETURN return"),
+            Keyword::Const => write!(f, "CONST const"),
         }
     }
 }
 
-#[derive(Debug, PartialEq,Clone)]
-pub enum Type {
+#[derive(Debug, PartialEq, Clone)]
+pub enum BType {
     Int,
     Void,
-    Const
 }
 
-impl Display for Type {
+impl Display for BType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Int => write!(f, "INT int"),
-            Type::Void => write!(f, "VOID void"),
-            Type::Const => write!(f, "CONST const"),
+            BType::Int => write!(f, "INT int"),
+            BType::Void => write!(f, "VOID void"),
         }
     }
 }
-
-
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operator {
@@ -182,139 +176,93 @@ impl Display for Operator {
 }
 
 fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
-
     match ExpressionParser::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
         Err(_) => {
-            eprintln!("error parse");
-            // let line_no =  if let pest::error::LineColLocation::Pos((line,_)) = e.line_col {
-            //     line
-            // } else {
-            //     0
-            // };
-            // // 提取e中的错误信息
-            // // 只取错误信息，不要自动生成的“期望 …”提示
-            // let err_msg = e.to_string();
-            // eprintln!("Error type A at Line {}:\n {}.",line_no,err_msg);
             None
         }
     }
 }
 
-pub fn tokenizer<W:Write>(input: &str,mut w:W) ->  io::Result<()>  {
+pub fn tokenizer<W: Write>(input: &str, mut w: W) -> io::Result<()> {
     let parse_result = parse_file(input);
     if parse_result.is_none() {
         return Ok(());
     }
-    let pair =
-        parse_result.unwrap()
-            .next()
-            .unwrap(); // 取第一个匹配
-    let line_tokens= pair.into_inner()
-        .filter_map(|p|{
+    let pair = parse_result.unwrap().next().unwrap(); // 取第一个匹配
+    let line_tokens = pair
+        .into_inner()
+        .filter_map(|p| {
             dbg!(&p);
             if p.as_rule() == Rule::EOI {
                 None
             } else {
-                Some((p.line_col().0,Token::from(p)))
+                Some((p.line_col().0, Token::from(p)))
             }
-        }).collect::<Vec<(usize,Token)>>();
-    let error_tokens:Vec<(usize,Token)>= line_tokens.iter().cloned().filter(|(_,token)|{
-        matches!(token,Token::ErrorSyntax(_))
-    }).collect();
+        })
+        .collect::<Vec<(usize, Token)>>();
+    let error_tokens: Vec<(usize, Token)> = line_tokens
+        .iter()
+        .cloned()
+        .filter(|(_, token)| matches!(token, Token::ErrorSyntax(_)))
+        .collect();
     if error_tokens.len() != 0 {
-        for (line,token) in error_tokens {
+        for (line, token) in error_tokens {
             writeln!(w, "Error type A at Line {}: {}.", line, token)?;
         }
-    }else {
-        for (line,token) in line_tokens {
-            writeln!(w, "{} at Line {}.", token,line)?;
+    } else {
+        for (line, token) in line_tokens {
+            writeln!(w, "{} at Line {}.", token, line)?;
         }
     }
     Ok(())
 }
 
-pub fn tokenize(input: &str)  {
-    let _ = tokenizer(input,io::stderr());
+pub fn tokenize(input: &str) {
+    let _ = tokenizer(input, io::stderr());
 }
-
 
 impl From<Pair<'_, Rule>> for Token {
     fn from(p: Pair<Rule>) -> Self {
         match p.as_rule() {
-            // Rule::Operator => {
-            //     let op = p.into_inner().next().expect("Operator must have one child");
-            //     match op.as_rule() {
-            //         Rule::Plus => Token::Operator(Operator::Plus),
-            //         Rule::Minus => Token::Operator(Operator::Minus),
-            //         Rule::Mul => Token::Operator(Operator::Mul),
-            //         Rule::Div => Token::Operator(Operator::Div),
-            //         Rule::Mod => Token::Operator(Operator::Mod),
-            //         Rule::Assign => Token::Operator(Operator::Assign),
-            //         Rule::Equal => Token::Operator(Operator::Equal),
-            //         Rule::NotEqual => Token::Operator(Operator::NotEqual),
-            //         Rule::Less => Token::Operator(Operator::Less),
-            //         Rule::LessEqual => Token::Operator(Operator::LessEqual),
-            //         Rule::Greater => Token::Operator(Operator::Greater),
-            //         Rule::GreaterEqual => Token::Operator(Operator::GreaterEqual),
-            //         Rule::And => Token::Operator(Operator::And),
-            //         Rule::Or => Token::Operator(Operator::Or),
-            //         Rule::Not => Token::Operator(Operator::Not),
-            //         Rule::OpenParen => Token::Operator(Operator::OpenParen),
-            //         Rule::CloseParen => Token::Operator(Operator::CloseParen),
-            //         Rule::OpenBrace => Token::Operator(Operator::OpenBrace),
-            //         Rule::CloseBrace => Token::Operator(Operator::CloseBrace),
-            //         Rule::OpenBracket => Token::Operator(Operator::OpenBracket),
-            //         Rule::CloseBracket => Token::Operator(Operator::CloseBracket),
-            //         Rule::Comma => Token::Operator(Operator::Comma),
-            //         Rule::Semicolon => Token::Operator(Operator::Semicolon),
-            //         _ => panic!("expected operator,found {}", op.as_str()),
-            //     }
-            // },
-            // Rule::Flow => {
-            //     let op = p.into_inner().next().expect("Operator must have one child");
-            //     match op.as_rule() {
-            //         Rule::If => Token::Flow(Flow::If),
-            //         Rule::Else => Token::Flow(Flow::Else),
-            //         Rule::While => Token::Flow(Flow::While),
-            //         Rule::Break => Token::Flow(Flow::Break),
-            //         Rule::Continue => Token::Flow(Flow::Continue),
-            //         Rule::Return => Token::Flow(Flow::Return),
-            //         _ => panic!("expected flow,found {}", op.as_str()),
-            //     }
-            // },
-            // Rule::Type => {
-            //     let op = p.into_inner().next().expect("Operator must have one child");
-            //     match op.as_rule() {
-            //         Rule::Int => Token::Type(Type::Int),
-            //         Rule::Void => Token::Type(Type::Void),
-            //         Rule::Const => Token::Type(Type::Const),
-            //         _ => panic!("expected type,found {}", op.as_str()),
-            //     }
-            // },
-            // Rule::IntegerConst => {
-            //     let op = p.into_inner().next().expect("Operator must have one child");
-            //     match op.as_rule() {
-            //         Rule::Hex => Token::IntegerConst(Hex(op.as_str().to_string())),
-            //         Rule::Octal => Token::IntegerConst(Octal(op.as_str().to_string())),
-            //         Rule::Dec => Token::IntegerConst(IntegerConst::Dec(op.as_str().to_string())),
-            //         _ => panic!("expected integer const,found {}", op.as_str()),
-            //     }
-            // },
-            // Rule::ErrorSyntax => {
-            //     let op = p.into_inner().next().expect("Operator must have one child");
-            //     match op.as_rule() {
-            //         // Rule::VarError => Token::ErrorSyntax(ErrorSyntax::VarError(op.as_str().to_string())),
-            //         Rule::InvalidHex => Token::ErrorSyntax(ErrorSyntax::InvalidHex(op.as_str().to_string())),
-            //         Rule::InvalidOctal => Token::ErrorSyntax(ErrorSyntax::InvalidOctal(op.as_str().to_string())),
-            //         // Rule::InvalidInteger => Token::ErrorSyntax(ErrorSyntax::InvalidInteger(op.as_str().to_string())),
-            //         Rule::InvalidOperator => Token::ErrorSyntax(ErrorSyntax::InvalidOperator(op.as_str().to_string())),
-            //         Rule::UnKnownError => Token::ErrorSyntax(ErrorSyntax::UnKnownError(op.as_str().to_string())),
-            //         _ => panic!("expected error syntax,found {}", op.as_str()),
-            //     }
-            // },
+            Rule::Plus => Token::Operator(Operator::Plus),
+            Rule::Minus => Token::Operator(Operator::Minus),
+            Rule::Mul => Token::Operator(Operator::Mul),
+            Rule::Div => Token::Operator(Operator::Div),
+            Rule::Mod => Token::Operator(Operator::Mod),
+            Rule::Assign => Token::Operator(Operator::Assign),
+            Rule::Equal => Token::Operator(Operator::Equal),
+            Rule::NotEqual => Token::Operator(Operator::NotEqual),
+            Rule::Less => Token::Operator(Operator::Less),
+            Rule::LessEqual => Token::Operator(Operator::LessEqual),
+            Rule::Greater => Token::Operator(Operator::Greater),
+            Rule::GreaterEqual => Token::Operator(Operator::GreaterEqual),
+            Rule::And => Token::Operator(Operator::And),
+            Rule::Or => Token::Operator(Operator::Or),
+            Rule::Not => Token::Operator(Operator::Not),
+            Rule::OpenParen => Token::Operator(Operator::OpenParen),
+            Rule::CloseParen => Token::Operator(Operator::CloseParen),
+            Rule::OpenBrace => Token::Operator(Operator::OpenBrace),
+            Rule::CloseBrace => Token::Operator(Operator::CloseBrace),
+            Rule::OpenBracket => Token::Operator(Operator::OpenBracket),
+            Rule::CloseBracket => Token::Operator(Operator::CloseBracket),
+            Rule::Comma => Token::Operator(Operator::Comma),
+            Rule::Semicolon => Token::Operator(Operator::Semicolon),
+            Rule::If => Token::Keyword(Keyword::If),
+            Rule::Else => Token::Keyword(Keyword::Else),
+            Rule::While => Token::Keyword(Keyword::While),
+            Rule::Break => Token::Keyword(Keyword::Break),
+            Rule::Continue => Token::Keyword(Keyword::Continue),
+            Rule::Return => Token::Keyword(Keyword::Return),
+            Rule::Const => Token::Keyword(Keyword::Const),
+            Rule::Int => Token::BType(BType::Int),
+            Rule::Void => Token::BType(BType::Void),
+            Rule::HexConst => Token::IntegerConst(Hex(p.as_str().to_string())),
+            Rule::OctConst => Token::IntegerConst(Octal(p.as_str().to_string())),
+            Rule::DecConst => Token::IntegerConst(IntegerConst::Dec(p.as_str().to_string())),
+            Rule::Ident => Token::Identifier(p.as_str().to_string()),
             _ => {
-                Token::Identifier(p.as_str().to_string())
+                Token::ErrorSyntax(ErrorSyntax::UnKnownError(p.as_str().to_string()))
             }
         }
     }
@@ -323,17 +271,7 @@ impl From<Pair<'_, Rule>> for Token {
 #[cfg(test)]
 mod tests {
     const FILE_PATH: &str = "tests/";
-    use crate::lexer::IntegerConst::{Hex, Octal};
     use super::*;
-
-    #[test]
-    #[ignore]
-    fn test_eprintln() {
-        eprintln!("{}",Operator::Plus);
-        eprintln!("{}",Hex("0X12".to_string()));
-        eprintln!("{}",Octal("012".to_string()));
-    }
-
 
     #[test]
     fn test_arrays_and_radix_files() {
@@ -344,272 +282,17 @@ mod tests {
         let _ = tokenizer(&file, &mut buf);
 
         let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"arrays_and_radix.out";
+        let expected_filename = FILE_PATH.to_string() + "arrays_and_radix.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
 
         assert_eq!(actual, expected);
     }
-
-    #[test]
-    fn test_comments_and_hex_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "comments_and_hex.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"comments_and_hex.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_complex_errors_test_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "complex_errors_test.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"complex_errors_test.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_complex_expressions_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "complex_expressions.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"complex_expressions.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_comprehensive_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "comprehensive.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"comprehensive.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_edge_case_test_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "edge_case_test.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"edge_case_test.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_empty_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "empty.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"empty.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_error_invalid_char_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "error_invalid_char.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"error_invalid_char.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_invalid_character_error_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "invalid_character_error.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"invalid_character_error.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_keywords_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "keywords.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"keywords.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-    #[test]
-    fn test_leading_zeros_test_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "leading_zeros_test.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"leading_zeros_test.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_numbers_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "numbers.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"numbers.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_octal_edge_case_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "octal_edge_case.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"octal_edge_case.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_operators_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "operators.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"operators.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_sample1_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "sample1.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"sample1.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-
-    #[test]
-    fn test_sample2_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "sample2.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"sample2.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_sample3_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "sample3.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"sample3.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_simple_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "simple.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"simple.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
-
-    #[test]
-    fn test_single_ampersand_test_files() {
-        // 1、把内容输出内存缓冲区
-        let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() + "single_ampersand_test.in";
-        let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        let _ = tokenizer(&file, &mut buf);
-
-        let actual = String::from_utf8(buf).unwrap();
-        let expected_filename = FILE_PATH.to_string()+"single_ampersand_test.out";
-        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        assert_eq!(actual, expected);
-    }
-
 
     #[test]
     fn test_lab2() {
         // 1、把内容输出内存缓冲区
         let mut buf = Vec::<u8>::new();
-        let filename = FILE_PATH.to_string() +"lab2_examples/"+"test.in";
+        let filename = FILE_PATH.to_string() + "lab2_in1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let _ = tokenizer(&file, &mut buf);
         let actual = String::from_utf8(buf).unwrap();
