@@ -38,7 +38,10 @@ impl<'a,W:Write> Formatter<'a, W>{
 
     pub fn fmt(&mut self,pair: Pair<Rule>) {
         fn build_next_line_str(count:usize)-> String {
-            format!("\n{0:1$}","    ", count)
+            if count == 0 {
+                return "\n".to_string();
+            }
+            format!("\n{0:1$}","", 4*count)
         }
         match pair.as_rule() {
                 Rule::FuncDef |
@@ -124,13 +127,14 @@ impl<'a,W:Write> Formatter<'a, W>{
 
                 }
                 Rule::CloseBrace => {
-                    self.deep-=1;
                     let input = format!("{}",pair.as_str());
-                    let pop_count = self.deep*4;
+                    let pop_count = 4usize;
                     for _ in 0..pop_count {
                         self.output.pop();
                     }
                     self.output.push_str(&input);
+                    self.deep-=1;
+                    self.output.push_str(&build_next_line_str(self.deep));
                 }
                 Rule::ErrorStmt => {
                     let input = format!("Error type A at Line {}: {}.\n",pair.line_col().0,pair.as_str());
@@ -168,7 +172,7 @@ impl<'a,W:Write> Formatter<'a, W>{
 
 pub fn fmt(input: &str){
     let mut binding = stdout();
-    let mut formatter = Formatter::new(1usize, input, &mut binding);
+    let mut formatter = Formatter::new(0usize, input, &mut binding);
     formatter.format_code().unwrap();
 }
 
@@ -180,12 +184,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_code() {
+    fn test_example_1() {
         // 1、把内容输出内存缓冲区
         let filename = FILE_PATH.to_string() + "lab2_example1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
-        let mut formatter = Formatter::new(1usize, &file, &mut binding);
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    fn test_example_2() {
+        // 1、把内容输出内存缓冲区
+        let filename = FILE_PATH.to_string() + "lab2_example2.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
         formatter.format_code().unwrap();
     }
 
@@ -203,5 +217,15 @@ mod tests {
             fmt_str.push_str(&input);
         }
         println!("{}", fmt_str);
+    }
+
+
+    #[test]
+    fn test_lab2_in1(){
+        let filename = FILE_PATH.to_string() + "lab2_in1.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
     }
 }
