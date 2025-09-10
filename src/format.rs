@@ -68,6 +68,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::EqExp |
                 Rule::LAndExp |
                 Rule::LOrExp |
+                Rule::Number |
                 Rule::Block=> {
                     let inner = pair.into_inner();
                     for p in inner {
@@ -83,15 +84,21 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::Semicolon => {
                     // 如果结尾是"return ",则去掉空格再添加分号
                     // 否则直接添加分号和换行
-                    if self.output.ends_with(" ") {
+                    while self.output.ends_with(" ") {
                         self.output.pop();
-                        self.output.push_str(";");
-                        self.output.push_str(&build_next_line_str(self.deep));
-                    } else {
-                        let input = format!("{}",pair.as_str());
-                        self.output.push_str(&input);
-                        self.output.push_str(&build_next_line_str(self.deep));
                     }
+                    let input = format!("{}",pair.as_str());
+                    self.output.push_str(&input);
+                    self.output.push_str(&build_next_line_str(self.deep));
+                }
+                Rule::CloseParen => {
+                    // 如果结尾是"return ",则去掉空格再添加分号
+                    // 否则直接添加分号和换行
+                    while self.output.ends_with(" ") {
+                        self.output.pop();
+                    }
+                    let input = format!("{}",pair.as_str());
+                    self.output.push_str(&input);
                 }
                 Rule::Plus |
                 Rule::Minus |
@@ -115,7 +122,10 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::Ident |
                 Rule::OpenParen |
                 Rule::OpenBracket |
-                Rule::CloseBracket => {
+                Rule::CloseBracket |
+                Rule::DecConst |
+                Rule::HexConst |
+                Rule::OctConst => {
                     let input = format!("{}",pair.as_str());
                     self.output.push_str(&input);
                 }
