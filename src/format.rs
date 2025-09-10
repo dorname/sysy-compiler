@@ -23,6 +23,7 @@ pub struct Formatter<'a,W: Write> {
     writer: &'a mut W,
     output: String,
     err_output:String,
+    forbid_newline: bool,
 }
 
 impl<'a,W:Write> Formatter<'a, W>{
@@ -33,6 +34,7 @@ impl<'a,W:Write> Formatter<'a, W>{
             output: String::new(),
             err_output: String::new(),
             writer,
+            forbid_newline: false,
         }
     }
 
@@ -45,7 +47,6 @@ impl<'a,W:Write> Formatter<'a, W>{
         }
         match pair.as_rule() {
                 Rule::FuncDef |
-                Rule::Decl |
                 Rule::VarDecl |
                 Rule::VarDef |
                 Rule::ConstDecl |
@@ -56,7 +57,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::FuncFParam |
                 Rule::InitVal |
                 Rule::BlockItem |
-                Rule::Stmt |
+                // Rule::Stmt |
                 Rule::LVal |
                 Rule::PrimaryExp |
                 Rule::CallExp |
@@ -74,6 +75,42 @@ impl<'a,W:Write> Formatter<'a, W>{
                     for p in inner {
                         self.fmt(p);
                     }
+                }
+                Rule::Stmt => {
+                    let inner = pair.into_inner();
+                    let first_pair = inner.peek().iter().next().unwrap().as_rule();
+                    match first_pair {
+                        Rule::Block => {
+                            for p in inner {
+                                self.fmt(p);
+                            }
+                        }
+                        _ => {
+                            // 1、如果前置是") "
+                            //    缩进加1且挪到下一行
+                            if self.output.ends_with(") ") {
+                                self.deep += 1;
+                                self.output.push_str(&build_next_line_str(self.deep));
+                                for p in inner {
+                                    self.fmt(p);
+                                }
+                                self.deep -= 1;
+                                self.output.push_str(&build_next_line_str(self.deep));
+                            }else {
+                                for p in inner {
+                                    self.fmt(p);
+                                }
+                            }
+                        }
+                    }
+                }
+                Rule::Decl => {
+                    let inner = pair.into_inner();
+                    self.forbid_newline = true;
+                    for p in inner {
+                        self.fmt(p);
+                    }
+                    self.forbid_newline = false;
                 }
                 Rule::Exp |
                 Rule::Cond |
@@ -97,7 +134,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                     while self.output.ends_with(" ") {
                         self.output.pop();
                     }
-                    let input = format!("{}",pair.as_str());
+                    let input = format!("{} ",pair.as_str());
                     self.output.push_str(&input);
                 }
                 Rule::Plus |
@@ -131,20 +168,26 @@ impl<'a,W:Write> Formatter<'a, W>{
                 }
                 Rule::OpenBrace => {
                     let input = format!("{}",pair.as_str());
-                    self.deep+=1;
                     self.output.push_str(&input);
-                    self.output.push_str(&build_next_line_str(self.deep));
-
+                    if !self.forbid_newline {
+                        self.deep+=1;
+                        self.output.push_str(&build_next_line_str(self.deep));
+                    }
                 }
                 Rule::CloseBrace => {
                     let input = format!("{}",pair.as_str());
-                    let pop_count = 4usize;
-                    for _ in 0..pop_count {
-                        self.output.pop();
+                    // 只有允许换行的情况才需要把前面空格吃掉
+                    if !self.forbid_newline {
+                        let pop_count = 4usize;
+                        for _ in 0..pop_count {
+                            self.output.pop();
+                        }
                     }
                     self.output.push_str(&input);
-                    self.deep-=1;
-                    self.output.push_str(&build_next_line_str(self.deep));
+                    if !self.forbid_newline {
+                        self.deep-=1;
+                        self.output.push_str(&build_next_line_str(self.deep));
+                    }
                 }
                 Rule::ErrorStmt => {
                     let input = format!("Error type A at Line {}: {}.\n",pair.line_col().0,pair.as_str());
@@ -233,6 +276,42 @@ mod tests {
     #[test]
     fn test_lab2_in1(){
         let filename = FILE_PATH.to_string() + "lab2_in1.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    fn test_lab2_in2(){
+        let filename = FILE_PATH.to_string() + "lab2_in2.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    fn test_lab2_in3(){
+        let filename = FILE_PATH.to_string() + "lab2_in3.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    fn test_lab2_in4(){
+        let filename = FILE_PATH.to_string() + "lab2_in4.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    fn test_lab2_in5(){
+        let filename = FILE_PATH.to_string() + "lab2_in5.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
