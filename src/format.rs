@@ -280,6 +280,16 @@ mod tests {
     }
 
     #[test]
+    fn test_example_3() {
+        // 1、把内容输出内存缓冲区
+        let filename = FILE_PATH.to_string() + "lab2_example3.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
     #[ignore]
     fn test_format_file() {
         let mut fmt_str = String::new();
