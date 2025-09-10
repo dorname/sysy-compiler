@@ -24,6 +24,7 @@ pub struct Formatter<'a,W: Write> {
     output: String,
     err_output:String,
     forbid_newline: bool,
+    forbid_semicolon_newline: bool,
 }
 
 impl<'a,W:Write> Formatter<'a, W>{
@@ -35,6 +36,7 @@ impl<'a,W:Write> Formatter<'a, W>{
             err_output: String::new(),
             writer,
             forbid_newline: false,
+            forbid_semicolon_newline: false,
         }
     }
 
@@ -79,6 +81,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::Stmt => {
                     let inner = pair.into_inner();
                     let first_pair = inner.peek().iter().next().unwrap().as_rule();
+                    let last_pair = inner.clone().last().unwrap().as_rule();
                     match first_pair {
                         Rule::Block => {
                             for p in inner {
@@ -88,15 +91,18 @@ impl<'a,W:Write> Formatter<'a, W>{
                         _ => {
                             // 1、如果前置是") "
                             //    缩进加1且挪到下一行
-                            if self.output.ends_with(") ") {
+                            if self.output.ends_with(") ")||
+                                (self.output.ends_with("else ") && first_pair != Rule::If) {
                                 self.deep += 1;
+                                self.forbid_semicolon_newline = true;
                                 self.output.push_str(&build_next_line_str(self.deep));
                                 for p in inner {
                                     self.fmt(p);
                                 }
                                 self.deep -= 1;
                                 self.output.push_str(&build_next_line_str(self.deep));
-                            }else {
+                                self.forbid_semicolon_newline = false;
+                            } else {
                                 for p in inner {
                                     self.fmt(p);
                                 }
@@ -125,8 +131,14 @@ impl<'a,W:Write> Formatter<'a, W>{
                         self.output.pop();
                     }
                     let input = format!("{}",pair.as_str());
+                    if self.output.ends_with("4") {
+                        dbg!(self.forbid_semicolon_newline);
+                    }
                     self.output.push_str(&input);
-                    self.output.push_str(&build_next_line_str(self.deep));
+                    if !self.forbid_semicolon_newline {
+                        // dbg!(self.output.clone());
+                        self.output.push_str(&build_next_line_str(self.deep));
+                    }
                 }
                 Rule::CloseParen => {
                     // 如果结尾是"return ",则去掉空格再添加分号
@@ -210,7 +222,7 @@ impl<'a,W:Write> Formatter<'a, W>{
         let pairs = pairs.into_inner().next().unwrap();
         // 把编译单元的内容拿出来
         let pairs = pairs.into_inner();
-        // dbg!(&pairs);
+        dbg!(&pairs);
         pairs.for_each(|pair| {
             self.fmt(pair);
         });
