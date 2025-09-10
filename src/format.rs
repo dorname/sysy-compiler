@@ -81,7 +81,8 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::Stmt => {
                     let inner = pair.into_inner();
                     let first_pair = inner.peek().iter().next().unwrap().as_rule();
-                    let last_pair = inner.clone().last().unwrap().as_rule();
+                    // let first_str =  inner.peek().iter().next().unwrap().as_str();
+                    // let last_str = inner.clone().last().unwrap().as_str();
                     match first_pair {
                         Rule::Block => {
                             for p in inner {
@@ -92,18 +93,22 @@ impl<'a,W:Write> Formatter<'a, W>{
                             // 1、如果前置是") "
                             //    缩进加1且挪到下一行
                             if self.output.ends_with(") ")||
-                                (self.output.ends_with("else ") && first_pair != Rule::If) {
+                                (self.output.ends_with("else ") && first_pair.ne(&Rule::If)) {
                                 self.deep += 1;
                                 self.forbid_semicolon_newline = true;
                                 self.output.push_str(&build_next_line_str(self.deep));
+                                // dbg!(inner.clone().as_str(),inner.clone().len());
                                 for p in inner {
+                                    let q = p.as_str();
                                     self.fmt(p);
                                 }
                                 self.deep -= 1;
                                 self.output.push_str(&build_next_line_str(self.deep));
                                 self.forbid_semicolon_newline = false;
                             } else {
+                                // dbg!(inner.clone().as_str());
                                 for p in inner {
+                                    let q = p.as_str();
                                     self.fmt(p);
                                 }
                             }
@@ -131,9 +136,9 @@ impl<'a,W:Write> Formatter<'a, W>{
                         self.output.pop();
                     }
                     let input = format!("{}",pair.as_str());
-                    if self.output.ends_with("4") {
-                        dbg!(self.forbid_semicolon_newline);
-                    }
+                    // if self.output.ends_with("4") {
+                    //     dbg!(self.forbid_semicolon_newline);
+                    // }
                     self.output.push_str(&input);
                     if !self.forbid_semicolon_newline {
                         // dbg!(self.output.clone());
@@ -222,13 +227,19 @@ impl<'a,W:Write> Formatter<'a, W>{
         let pairs = pairs.into_inner().next().unwrap();
         // 把编译单元的内容拿出来
         let pairs = pairs.into_inner();
-        dbg!(&pairs);
+        // dbg!(&pairs);
         pairs.for_each(|pair| {
             self.fmt(pair);
         });
         if self.err_output.len() != 0 {
             writeln!(self.writer, "{}", self.err_output)?;
         }else {
+            // 清除由于递归引起的空白行
+            self.output = self.output
+                .lines()                         // 按行迭代（会去掉行末的 '\n'）
+                .filter(|line| !line.trim().is_empty()) // 过滤掉只含空白的行
+                .collect::<Vec<_>>()
+                .join("\n");
             writeln!(self.writer, "{}", self.output)?;
         }
         Ok(())
