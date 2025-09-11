@@ -123,7 +123,7 @@ FuncRParams = { Exp ~ ( Comma ~ Exp )* }                  // 至少 1 个
 UnaryExp    = { CallExp | PrimaryExp | UnaryOp ~ UnaryExp }
 
 MulExp      = { UnaryExp ~ ( ( Mul | Div | Mod ) ~ UnaryExp )* }
-AddExp      = { MulExp   ~ ( ( Plus | Div )       ~ MulExp   )* }
+AddExp      = { MulExp   ~ ( ( Plus | Minus )     ~ MulExp   )* }
 RelExp      = { AddExp   ~ ( ( LessEqual | GreaterEqual | Less | Greater ) ~ AddExp )* }
 EqExp       = { RelExp   ~ ( ( Equal | NotEqual ) ~ RelExp )* }
 LAndExp     = { EqExp    ~ ( And ~ EqExp )* }
