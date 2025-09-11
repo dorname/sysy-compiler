@@ -94,8 +94,6 @@ impl<'a,W:Write> Formatter<'a, W>{
                 Rule::Stmt => {
                     let inner = pair.into_inner();
                     let first_pair = inner.peek().iter().next().unwrap().as_rule();
-                    // let first_str =  inner.peek().iter().next().unwrap().as_str();
-                    // let last_str = inner.clone().last().unwrap().as_str();
                     match first_pair {
                         Rule::Block => {
                             for p in inner {
@@ -120,11 +118,11 @@ impl<'a,W:Write> Formatter<'a, W>{
                                 // 处理else后面跟非if语句的情况，需要缩进
                                 self.deep += 1;
                                 self.output.push_str(&build_next_line_str(self.deep));
+                                self.deep -= 1;
                                 for p in inner {
                                     let _q = p.as_str();
                                     self.fmt(p);
                                 }
-                                self.deep -= 1;
                             } else {
                                 for p in inner {
                                     self.fmt(p);
@@ -148,15 +146,8 @@ impl<'a,W:Write> Formatter<'a, W>{
                     self.fmt(p);
                 }
                 Rule::Semicolon => {
-                    // 特殊处理：如果是return后直接跟分号，则去掉return后的空格
-                    if self.output.ends_with("return ") {
-                        // 去掉return后的空格
+                    while self.output.ends_with(" ") {
                         self.output.pop();
-                    } else {
-                        // 其他情况去掉末尾空格
-                        while self.output.ends_with(" ") {
-                            self.output.pop();
-                        }
                     }
                     let input = format!("{}",pair.as_str());
                     self.output.push_str(&input);
@@ -235,6 +226,57 @@ impl<'a,W:Write> Formatter<'a, W>{
                 }
         }
     }
+    /// 清理字符串中的多余空行，仅保留符合条件的空行。
+    ///
+    /// # 参数
+    /// - `input`: 需要处理的多行字符串。
+    ///
+    /// # 返回值
+    /// 返回一个新的字符串：
+    /// - 移除了不必要的空行。
+    /// - 保留了函数之间的空行（由 [`should_keep_blank_line`] 决定）。
+    /// - 去掉了末尾多余的空行。
+    ///
+    /// # 行为说明
+    /// 1. 遍历输入的每一行：
+    ///    - 如果行非空，直接保留。
+    ///    - 如果行为空，调用 [`should_keep_blank_line`] 判断是否保留该空行。
+    /// 2. 在拼接结果前，移除末尾连续的空行。
+    ///
+    /// # 示例
+    /// ```rust
+    /// # struct Cleaner;
+    /// # impl Cleaner {
+    /// #     fn should_keep_blank_line(&self, _lines: &[&str], _i: usize) -> bool { true }
+    /// #     fn clean_extra_blank_lines(&self, input: &str) -> String {
+    /// #         let lines: Vec<&str> = input.lines().collect();
+    /// #         let mut result = Vec::new();
+    /// #         for (i, line) in lines.iter().enumerate() {
+    /// #             if line.trim().is_empty() {
+    /// #                 if self.should_keep_blank_line(&lines, i) {
+    /// #                     result.push(*line);
+    /// #                 }
+    /// #             } else {
+    /// #                 result.push(*line);
+    /// #             }
+    /// #         }
+    /// #         while let Some(last_line) = result.last() {
+    /// #             if last_line.trim().is_empty() {
+    /// #                 result.pop();
+    /// #             } else {
+    /// #                 break;
+    /// #             }
+    /// #         }
+    /// #         result.join("\n")
+    /// #     }
+    /// # }
+    /// let cleaner = Cleaner;
+    /// let input = "fn foo() {}\n\nfn bar() {}\n\n";
+    /// let output = cleaner.clean_extra_blank_lines(input);
+    /// assert!(output.ends_with("fn bar() {}"));
+    /// ```
+    ///
+    /// [`should_keep_blank_line`]: Self::should_keep_blank_line
     fn clean_extra_blank_lines(&self, input: &str) -> String {
         let lines: Vec<&str> = input.lines().collect();
         let mut result = Vec::new();
@@ -262,7 +304,33 @@ impl<'a,W:Write> Formatter<'a, W>{
         
         result.join("\n")
     }
-    
+
+    /// 判断某个空行是否应该被保留。
+    ///
+    /// # 参数
+    /// - `lines`: 源代码的所有行，按顺序存放的字符串切片数组。
+    /// - `blank_line_index`: 当前空行在 `lines` 中的索引。
+    ///
+    /// # 返回值
+    /// - `true`：如果该空行应该被保留；
+    /// - `false`：否则移除该空行。
+    ///
+    /// # 保留规则
+    /// - 当空行前一行以 `}` 结尾，且后一行是函数定义时，保留该空行。
+    ///   - 例如：
+    ///   ```c
+    ///   void foo() {
+    ///       // ...
+    ///   }
+    ///
+    ///   int bar() {
+    ///       // ...
+    ///   }
+    ///   ```
+    ///   上例中的空行会被保留，以便区分函数。
+    ///
+    /// # 其他情况
+    /// - 所有不符合上述条件的空行，都会被移除。
     fn should_keep_blank_line(&self, lines: &[&str], blank_line_index: usize) -> bool {
         // 查找前一个非空行
         let mut prev_non_empty = None;
