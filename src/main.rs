@@ -1,6 +1,7 @@
 mod lexer;
 mod utils;
 mod format;
+mod check;
 
 use lexer::*;
 use std::{env, fs};

@@ -1,0 +1,28 @@
+// Error type 5
+
+int i0;
+int i1, i2, i3;
+int a1[1][2][4], a2[4][5], a3[5];
+
+// ok
+int func1(int f6, int i7, int f8, int i9) {
+    i0 = 0;
+    i1 = 1;
+    i2 = 2;
+    i3 = 4;
+    a1[0][1][2] = i0;
+    a2[2][3] = i1;
+    a3[4] = i2;
+}
+
+int func2() {
+    i1 = a1;
+    a1[1] = i3;
+    a1[1] = a2; // ok
+    a2[2][2] = a3;
+    a2[1] = a3; // ok
+    a1[3][3] = i1;
+}
+
+int main() {
+}
