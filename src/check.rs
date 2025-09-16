@@ -53,10 +53,67 @@ impl<'a,W: Write> Checker<'a,W> {
 
     fn check(&mut self,pair:Pair<Rule>) {
         match pair.as_rule() {
+            Rule::Decl => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.check(inner_pair);
+                }
+            }
+            Rule::ConstDecl => {
+                let inner_pairs = pair.into_inner();
+                let mut const_decls = Vec::<VariableDel>::new();
+
+            }
             _ => { /* todo 语义检查逻辑 */ }
         }
     }
+    fn check_decl(&mut self,pair:Pair<Rule>,decls:&mut Vec<VariableDel>) {
+        match pair.as_rule() {
+            Rule::ConstDef => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.check_decl(inner_pair,decls);
+                }
+            },
+            Rule::Const => {
+
+            }
+            _ => {
+                /* todo 语义检查逻辑 */
+            }
+        }
+    }
 }
+
+#[derive(Debug,Clone)]
+pub struct VariableDel {
+    name: String,
+    var_type: Option<String>,
+    line_no: usize,
+    is_const : bool,
+    const_type: Option<String>,
+}
+
+impl VariableDel {
+    fn new(line_no: usize,name: String) -> Self {
+        VariableDel {
+            name,
+            var_type:None,
+            line_no,
+            is_const: false,
+            const_type:None,
+        }
+    }
+    fn check(&self,tip:String) -> Option<CheckError> {
+        // todo 变量声明检查逻辑
+        if self.var_type.is_none() | self.const_type.is_none() {
+            return Some(CheckError::new(ErrorKind::UndefinedVal,Some(tip)));
+        }
+        None
+    }
+}
+
+
 
 
 struct PairCheckResult<'a> {
@@ -70,7 +127,6 @@ impl <'a> PairCheckResult<'a> {
         self.output = if self.err_types.is_empty() {
             Cow::Borrowed("")
         } else {
-            // todo 后面可能要改成filter_map
             Cow::Owned(self.err_types.iter()
                 .map(|e| format!("Error type {} at line{}: {}", e.get_kind(), self.line_no, e.build_str()))
                 .collect::<Vec<String>>().join("\n"))
@@ -198,5 +254,30 @@ impl CheckError {
         }else {
             format!("{}", self.get_msg())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    /// 递归测试
+    /// &mut Vec<String> 的递归传递 不会丧失所有权
+    /// 并且值会被正确修改
+    /// 证明了 &mut T 的传递是安全的
+    /// 这点和 &T 不同，&T 的传递会丧失所有权
+    /// 因为 &T 是不可变引用，无法修改值
+    /// 所以需要使用 &mut T 来传递可变引用
+    fn test_recursive() {
+        fn test( arr_s:&mut Vec<String>, count: u8) {
+            if count == 8 {
+                return;
+            }
+            arr_s.push("test".to_string());
+            test(arr_s,count+1);
+        }
+        let mut arr_s:Vec<_> = Vec::<String>::new();
+        test(&mut arr_s,0);
+        println!("{:?}", arr_s);
     }
 }
