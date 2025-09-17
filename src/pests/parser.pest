@@ -71,7 +71,7 @@ ConstDef    = { Ident ~ ArrayDims? ~ Assign ~ ConstInitVal }
 ArrayDims   = { (OpenBracket ~ ConstExp ~ CloseBracket)+ }
 
 // 形如：1、{{1,2,3},{4,5,6}}
-ConstInitVal= { ConstExp | OpenBrace ~ ( ConstInitVal ~ ( Comma ~ ConstInitVal )* )? ~ CloseBrace }
+ConstInitVal= {  ConstExp  | OpenBrace ~ ( ConstInitVal ~ ( Comma ~ ConstInitVal )* )? ~ CloseBrace }
 
 // ---------- 变量声明 ----------
 // int a, b[2];

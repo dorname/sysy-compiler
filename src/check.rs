@@ -6,6 +6,7 @@ use std::io::Write;
 use pest::iterators::Pairs;
 use pest_derive::Parser;
 use pest::Parser;
+use crate::utils::add_option_string;
 
 #[derive(Parser)]
 #[grammar = "pests/parser.pest"]
@@ -23,6 +24,7 @@ pub struct Checker<'a,W:Write>{
     input: &'a str,
     writer: &'a mut W,
     output: String,
+    variable_del: Vec<VariableDel>
 }
 
 impl<'a,W: Write> Checker<'a,W> {
@@ -31,6 +33,7 @@ impl<'a,W: Write> Checker<'a,W> {
             input,
             writer,
             output: String::new(),
+            variable_del: Vec::new()
         }
     }
     fn syn_check(&mut self) -> io::Result<()> {
@@ -59,61 +62,115 @@ impl<'a,W: Write> Checker<'a,W> {
                     self.check(inner_pair);
                 }
             }
-            Rule::ConstDecl => {
-                let inner_pairs = pair.into_inner();
+            Rule::ConstDecl | Rule::VarDecl => {
+                let def_str = pair.as_str();
                 let mut const_decls = Vec::<VariableDel>::new();
-
+                // 检查字符串有多少个',' 确定这段声明，一共定义了多少个变量
+                let var_count = def_str.matches(',').count() + 1;
+                // 创建多个常量声明结构体
+                for _ in 0..var_count {
+                    let line_no = pair.line_col().0;
+                    const_decls.push(VariableDel::new(line_no));
+                }
+                let mut count = const_decls.len();
+                let len = const_decls.len();
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if inner_pair.as_rule() == Rule::ConstDef && count < const_decls.len(){
+                        self.walk_def(inner_pair,&mut const_decls[len - count]);
+                        count -= 1;
+                    }else {
+                        self.walk_decl(inner_pair,&mut const_decls);
+                    }
+                }
+                self.variable_del.append(&mut const_decls);
             }
             _ => { /* todo 语义检查逻辑 */ }
         }
     }
-    fn check_decl(&mut self,pair:Pair<Rule>,decls:&mut Vec<VariableDel>) {
+    fn walk_decl(&mut self,pair:Pair<Rule>,decls:&mut Vec<VariableDel>) {
+        match pair.as_rule() {
+            Rule::Const => {
+                for decl in decls  {
+                    decl.is_const = true;
+                }
+            },
+            Rule::BType => {
+                for decl in decls {
+                    decl.var_type = Some(pair.as_str().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk_def(&mut self,pair:Pair<Rule>,def:&mut VariableDel) {
+        // fn single_def(&mut self,pair)
         match pair.as_rule() {
             Rule::ConstDef => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
-                    self.check_decl(inner_pair,decls);
+                    self.walk_def(inner_pair, def);
                 }
             },
-            Rule::Const => {
-
+            Rule::Ident => {
+                def.name = Some(pair.as_str().to_string());
+            },
+            Rule::ArrayDims => {
+                self.walk_array_dims(pair, def);
             }
-            _ => {
-                /* todo 语义检查逻辑 */
-            }
+            _ => {}
+        }
+    }
+    
+    fn walk_array_dims(&mut self,pair:Pair<Rule>,def:&mut VariableDel) {
+        match pair.as_rule() {
+            Rule::ConstExp => {
+                def.array_dims.push(pair.as_str().to_string());
+            },
+            _ => {}
         }
     }
 }
 
 #[derive(Debug,Clone)]
 pub struct VariableDel {
-    name: String,
+    name: Option<String>,
     var_type: Option<String>,
     line_no: usize,
     is_const : bool,
-    const_type: Option<String>,
+    array_dims: Vec<String>,
 }
 
 impl VariableDel {
-    fn new(line_no: usize,name: String) -> Self {
+    fn new(line_no: usize) -> Self {
         VariableDel {
-            name,
+            name: None,
             var_type:None,
             line_no,
-            is_const: false,
-            const_type:None,
+            is_const:false,
+            array_dims: Vec::new(),
         }
     }
-    fn check(&self,tip:String) -> Option<CheckError> {
-        // todo 变量声明检查逻辑
-        if self.var_type.is_none() | self.const_type.is_none() {
-            return Some(CheckError::new(ErrorKind::UndefinedVal,Some(tip)));
-        }
-        None
+   fn is_array_type(&self) -> bool {
+        !self.array_dims.is_empty()
+   }
+
+    fn is_common_type(&self) -> bool {
+        !self.is_array_type()
     }
+
+    fn is_const_var(&self) -> bool {
+        self.is_const
+    }
+
+    fn get_ident(&self) -> Option<String> {
+       if self.is_array_type() {
+           return add_option_string(self.name.clone(),Some(self.array_dims.join("")));
+       }
+        self.name.clone()
+    }
+
 }
-
-
 
 
 struct PairCheckResult<'a> {
@@ -261,6 +318,7 @@ impl CheckError {
 mod tests {
 
     #[test]
+    #[ignore]
     /// 递归测试
     /// &mut Vec<String> 的递归传递 不会丧失所有权
     /// 并且值会被正确修改
@@ -279,5 +337,14 @@ mod tests {
         let mut arr_s:Vec<_> = Vec::<String>::new();
         test(&mut arr_s,0);
         println!("{:?}", arr_s);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_vec_append() {
+        let mut a = vec![1, 2, 3];
+        let mut b = vec![4, 5, 6];
+        a.append(&mut b);
+        println!("a: {:?}, b: {:?}", a, b); // a: [1, 2, 3, 4, 5, 6], b: []
     }
 }

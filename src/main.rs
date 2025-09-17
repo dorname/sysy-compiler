@@ -1,3 +1,7 @@
+
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 mod lexer;
 mod utils;
 mod format;

@@ -5,6 +5,7 @@ use pest::Parser;
 use pest::iterators::Pairs;
 use pest_derive::Parser;
 
+
 #[derive(Parser)]
 #[grammar = "pests/parser.pest"]
 pub struct FParser;
@@ -377,7 +378,7 @@ impl<'a,W:Write> Formatter<'a, W>{
         let pairs = pairs.into_inner().next().unwrap();
         // 把编译单元的内容拿出来
         let pairs = pairs.into_inner();
-        // dbg!(&pairs);
+        dbg!(&pairs);
         pairs.for_each(|pair| {
             self.fmt(pair);
         });
@@ -403,6 +404,7 @@ pub fn fmt(input: &str){
 #[cfg(test)]
 mod tests {
     const FILE_PATH: &str = "tests/lab2/";
+    const OTHER_FILE_PATH: &str = "tests/lab3/";
     use super::*;
 
     #[test]
@@ -491,6 +493,16 @@ mod tests {
     #[test]
     fn test_lab2_in5(){
         let filename = FILE_PATH.to_string() + "lab2_in5.txt";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut formatter = Formatter::new(0usize, &file, &mut binding);
+        formatter.format_code().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn check(){
+        let filename = OTHER_FILE_PATH.to_string() + "normaltest01-1.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
