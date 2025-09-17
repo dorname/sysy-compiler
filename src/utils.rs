@@ -49,3 +49,11 @@ pub fn add_option_string(a: Option<String>, b: Option<String>) -> Option<String>
         (None, None) => None,
     }
 }
+
+pub fn eq_option_string(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (Some(a_str), Some(b_str)) => a_str == b_str,
+        (None, None) => true,
+        _ => false,
+    }
+}
