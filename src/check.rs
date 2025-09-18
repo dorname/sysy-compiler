@@ -249,7 +249,13 @@ impl<'a, W: Write> Checker<'a, W> {
                 self.check(pair);
             }
             Rule::Ident => {
-                //1、校验调用的函数是否未定义
+                // 这里只有从CallExp的进来
+                // （1）函数未定义错误：
+                //  没有同一作用域级别或者上一层级的同名变量定义或者函数定义。
+                // （2）非函数调用错误：
+                //  存在同名变量且同名变量在所有同名函数和变量中作用域级别与当前作用域最接近，且所属层级要小于等于当前层级。
+                //  (3) 参数不适用错误：
+                //  参数数量和参数类型不一致 这个地方需要测试
                 let ident = pair.as_str();
                 let line_no = pair.line_col().0;
                 if !self.func_contains(&ident)  {
@@ -260,7 +266,7 @@ impl<'a, W: Write> Checker<'a, W> {
                     );
                     self.check_results.push(check_result);
                 }else {
-                    // TODO函数未定义
+                    // TODO
                 }
             }
             _ => {}
@@ -359,7 +365,8 @@ impl<'a, W: Write> Checker<'a, W> {
         self.context_stack.last()
     }
 }
-
+/// 函数定义的作用域级数是1因为函数无法嵌套但是函数内容可以使用{}块嵌套作用域
+/// 进入block 层级+1
 #[derive(Debug)]
 pub struct FuncDef {
     name: Option<String>,
