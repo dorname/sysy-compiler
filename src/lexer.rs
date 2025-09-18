@@ -36,10 +36,7 @@ impl Display for Token {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum CompUnit {
-
-}
-
+pub enum CompUnit {}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ErrorSyntax {
@@ -178,9 +175,7 @@ impl Display for Operator {
 fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
     match Lexer::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
-        Err(_) => {
-            None
-        }
+        Err(_) => None,
     }
 }
 
@@ -261,9 +256,7 @@ impl From<Pair<'_, Rule>> for Token {
             Rule::OctConst => Token::IntegerConst(Octal(p.as_str().to_string())),
             Rule::DecConst => Token::IntegerConst(IntegerConst::Dec(p.as_str().to_string())),
             Rule::Ident => Token::Identifier(p.as_str().to_string()),
-            _ => {
-                Token::ErrorSyntax(ErrorSyntax::UnKnownError(p.as_str().to_string()))
-            }
+            _ => Token::ErrorSyntax(ErrorSyntax::UnKnownError(p.as_str().to_string())),
         }
     }
 }
@@ -289,7 +282,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"arrays_and_radix.out";
+        let expected_filename = FILE_PATH.to_string() + "arrays_and_radix.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
 
         assert_eq!(actual, expected);
@@ -311,7 +304,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"comments_and_hex.out";
+        let expected_filename = FILE_PATH.to_string() + "comments_and_hex.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
 
         assert_eq!(actual, expected);
@@ -333,10 +326,20 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        actual = actual.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
-        let expected_filename = FILE_PATH.to_string()+"complex_errors_test.out";
+        actual = actual
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let expected_filename = FILE_PATH.to_string() + "complex_errors_test.out";
         let mut expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
+        expected = expected
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
         assert_eq!(actual, expected);
     }
 
@@ -356,7 +359,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"complex_expressions.out";
+        let expected_filename = FILE_PATH.to_string() + "complex_expressions.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -377,7 +380,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"comprehensive.out";
+        let expected_filename = FILE_PATH.to_string() + "comprehensive.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -398,7 +401,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"edge_case_test.out";
+        let expected_filename = FILE_PATH.to_string() + "edge_case_test.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -419,7 +422,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"empty.out";
+        let expected_filename = FILE_PATH.to_string() + "empty.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -440,10 +443,20 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        actual = actual.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
-        let expected_filename = FILE_PATH.to_string()+"error_invalid_char.out";
+        actual = actual
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let expected_filename = FILE_PATH.to_string() + "error_invalid_char.out";
         let mut expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
+        expected = expected
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
         assert_eq!(actual, expected);
     }
 
@@ -463,10 +476,20 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        actual = actual.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
-        let expected_filename = FILE_PATH.to_string()+"invalid_character_error.out";
+        actual = actual
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let expected_filename = FILE_PATH.to_string() + "invalid_character_error.out";
         let mut expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
+        expected = expected
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
         assert_eq!(actual, expected);
     }
 
@@ -486,7 +509,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"keywords.out";
+        let expected_filename = FILE_PATH.to_string() + "keywords.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -506,7 +529,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"leading_zeros_test.out";
+        let expected_filename = FILE_PATH.to_string() + "leading_zeros_test.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -527,7 +550,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"numbers.out";
+        let expected_filename = FILE_PATH.to_string() + "numbers.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -548,7 +571,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"octal_edge_case.out";
+        let expected_filename = FILE_PATH.to_string() + "octal_edge_case.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -569,7 +592,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"operators.out";
+        let expected_filename = FILE_PATH.to_string() + "operators.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -590,11 +613,10 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"sample1.out";
+        let expected_filename = FILE_PATH.to_string() + "sample1.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
-
 
     #[test]
     fn test_sample2_files() {
@@ -612,10 +634,20 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        actual = actual.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
-        let expected_filename = FILE_PATH.to_string()+"sample2.out";
+        actual = actual
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let expected_filename = FILE_PATH.to_string() + "sample2.out";
         let mut expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
+        expected = expected
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
         assert_eq!(actual, expected);
     }
 
@@ -635,7 +667,7 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"sample3.out";
+        let expected_filename = FILE_PATH.to_string() + "sample3.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
@@ -656,11 +688,10 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        let expected_filename = FILE_PATH.to_string()+"simple.out";
+        let expected_filename = FILE_PATH.to_string() + "simple.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
-
 
     #[test]
     fn test_single_ampersand_test_files() {
@@ -678,10 +709,20 @@ mod tests {
         if cfg!(windows) {
             actual = actual.replace('\n', "\r\n");
         }
-        actual = actual.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
-        let expected_filename = FILE_PATH.to_string()+"single_ampersand_test.out";
+        actual = actual
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let expected_filename = FILE_PATH.to_string() + "single_ampersand_test.out";
         let mut expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-        expected = expected.split(":").collect::<Vec<_>>().get(0).unwrap().to_string();
+        expected = expected
+            .split(":")
+            .collect::<Vec<_>>()
+            .get(0)
+            .unwrap()
+            .to_string();
         assert_eq!(actual, expected);
     }
 }

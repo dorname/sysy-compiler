@@ -1,10 +1,9 @@
-use pest::iterators::Pair;
-use std::io;
-use std::io::{stdout, Write};
 use pest::Parser;
+use pest::iterators::Pair;
 use pest::iterators::Pairs;
 use pest_derive::Parser;
-
+use std::io;
+use std::io::{Write, stdout};
 
 #[derive(Parser)]
 #[grammar = "pests/parser.pest"]
@@ -12,24 +11,22 @@ pub struct FParser;
 fn parse_file(input: &'_ str) -> Option<Pairs<'_, Rule>> {
     match FParser::parse(Rule::File, input) {
         Ok(pairs) => Some(pairs),
-        Err(_) => {
-            None
-        }
+        Err(_) => None,
     }
 }
 
-pub struct Formatter<'a,W: Write> {
+pub struct Formatter<'a, W: Write> {
     deep: usize,
     input: &'a str,
     writer: &'a mut W,
     output: String,
-    err_output:String,
+    err_output: String,
     forbid_newline: bool,
     forbid_semicolon_newline: bool,
     is_first_function: bool,
 }
 
-impl<'a,W:Write> Formatter<'a, W>{
+impl<'a, W: Write> Formatter<'a, W> {
     pub fn new(deep: usize, input: &'a str, writer: &'a mut W) -> Self {
         Self {
             deep,
@@ -43,12 +40,12 @@ impl<'a,W:Write> Formatter<'a, W>{
         }
     }
 
-    pub fn fmt(&mut self,pair: Pair<Rule>) {
-        fn build_next_line_str(count:usize)-> String {
+    pub fn fmt(&mut self, pair: Pair<Rule>) {
+        fn build_next_line_str(count: usize) -> String {
             if count == 0 {
                 return "\n".to_string();
             }
-            format!("\n{0:1$}","", 4*count)
+            format!("\n{0:1$}", "", 4 * count)
         }
         match pair.as_rule() {
                 Rule::FuncDef => {
@@ -281,7 +278,7 @@ impl<'a,W:Write> Formatter<'a, W>{
     fn clean_extra_blank_lines(&self, input: &str) -> String {
         let lines: Vec<&str> = input.lines().collect();
         let mut result = Vec::new();
-        
+
         for (i, line) in lines.iter().enumerate() {
             if line.trim().is_empty() {
                 // 检查是否应该保留这个空行
@@ -293,7 +290,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 result.push(*line);
             }
         }
-        
+
         // 移除末尾的空行
         while let Some(last_line) = result.last() {
             if last_line.trim().is_empty() {
@@ -302,7 +299,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 break;
             }
         }
-        
+
         result.join("\n")
     }
 
@@ -341,7 +338,7 @@ impl<'a,W:Write> Formatter<'a, W>{
                 break;
             }
         }
-        
+
         // 查找后一个非空行
         let mut next_non_empty = None;
         for i in (blank_line_index + 1)..lines.len() {
@@ -350,19 +347,22 @@ impl<'a,W:Write> Formatter<'a, W>{
                 break;
             }
         }
-        
+
         // 如果前后都有非空行，检查是否应该保留空行
         if let (Some(prev_idx), Some(next_idx)) = (prev_non_empty, next_non_empty) {
             let prev_line = lines[prev_idx].trim();
             let next_line = lines[next_idx].trim();
-            
+
             // 保留函数间的空行（前一行以}结尾，后一行是函数定义）
-            if prev_line.ends_with("}") && 
-               (next_line.starts_with("int ") || next_line.starts_with("void ") || next_line.starts_with("const ")) {
+            if prev_line.ends_with("}")
+                && (next_line.starts_with("int ")
+                    || next_line.starts_with("void ")
+                    || next_line.starts_with("const "))
+            {
                 return true;
             }
         }
-        
+
         // 其他情况不保留空行
         false
     }
@@ -384,7 +384,7 @@ impl<'a,W:Write> Formatter<'a, W>{
         });
         if self.err_output.len() != 0 {
             writeln!(self.writer, "{}", self.err_output)?;
-        }else {
+        } else {
             // 清除由于递归引起的多余空白行，但保留函数间的单个空行
             let cleaned_output = self.clean_extra_blank_lines(&self.output);
             writeln!(self.writer, "{}", cleaned_output)?;
@@ -393,13 +393,11 @@ impl<'a,W:Write> Formatter<'a, W>{
     }
 }
 
-pub fn fmt(input: &str){
+pub fn fmt(input: &str) {
     let mut binding = stdout();
     let mut formatter = Formatter::new(0usize, input, &mut binding);
     formatter.format_code().unwrap();
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -447,15 +445,14 @@ mod tests {
             fmt_str.pop();
             fmt_str.push(';');
         } else {
-            let input = format!("{}\n",";");
+            let input = format!("{}\n", ";");
             fmt_str.push_str(&input);
         }
         println!("{}", fmt_str);
     }
 
-
     #[test]
-    fn test_lab2_in1(){
+    fn test_lab2_in1() {
         let filename = FILE_PATH.to_string() + "lab2_in1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -464,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in2(){
+    fn test_lab2_in2() {
         let filename = FILE_PATH.to_string() + "lab2_in2.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -473,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in3(){
+    fn test_lab2_in3() {
         let filename = FILE_PATH.to_string() + "lab2_in3.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -482,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in4(){
+    fn test_lab2_in4() {
         let filename = FILE_PATH.to_string() + "lab2_in4.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -491,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in5(){
+    fn test_lab2_in5() {
         let filename = FILE_PATH.to_string() + "lab2_in5.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -501,13 +498,11 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn check(){
+    fn check() {
         let filename = OTHER_FILE_PATH.to_string() + "normaltest01-1.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
         formatter.format_code().unwrap();
     }
-
-
 }

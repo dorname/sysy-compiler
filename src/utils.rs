@@ -40,7 +40,6 @@ pub fn oct_to_int(s: &str) -> Result<BigInt, num_bigint::ParseBigIntError> {
     BigInt::from_str_radix(input, 8)
 }
 
-
 pub fn add_option_string(a: Option<String>, b: Option<String>) -> Option<String> {
     match (a, b) {
         (Some(a_str), Some(b_str)) => Some(format!("{}{}", a_str, b_str)),

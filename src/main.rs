@@ -1,15 +1,14 @@
-
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+mod check;
+mod format;
 mod lexer;
 mod utils;
-mod format;
-mod check;
 
+use crate::format::fmt;
 use lexer::*;
 use std::{env, fs};
-use crate::format::fmt;
 
 fn main() {
     // 收集命令行参数

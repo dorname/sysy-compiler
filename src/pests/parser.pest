@@ -89,7 +89,13 @@ FuncType    = { Void | Int }
 
 FuncFParams = { FuncFParam ~ ( Comma ~ FuncFParam )* }
 // 形参为数组时：第一维省略长度，其余维度需给出常量表达式
-FuncFParam  = { BType ~ Ident ~ ( OpenBracket ~ CloseBracket ~ (OpenBracket ~ Exp ~ CloseBracket)* )? }
+FuncFParam  = { BType ~ Ident ~ ( NonIntArr ~ IntArr* )? }
+
+// 无形状数组入参
+NonIntArr = { OpenBracket ~ CloseBracket }
+
+// 有形状数组入参
+IntArr = { OpenBracket ~ Exp ~ CloseBracket }
 
 // ---------- 语句块 ----------
 Block       = { OpenBrace ~ ( BlockItem | ErrorStmt )* ~ CloseBrace }
