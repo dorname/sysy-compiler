@@ -1,13 +1,14 @@
-// Error type 1
+
 int k() {}
+int op(int qq,int qb) {}
 int test(int a[],int b[][5]) {
     int i = 1;
-  //  q = 2;
-  //  a = 1;
     int k = 2;
     int d = k() + 1 + i + c; // undefined c k 应该提示 并非函数
     const int e = 1 + k(); // k 应该提示 并非函数
-    at();
+    int p = d();
+    int hh = op(1,2);
+    int l = at();
     return j;
 }
 

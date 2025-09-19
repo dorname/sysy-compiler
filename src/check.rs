@@ -9,6 +9,7 @@ use std::fmt::Display;
 use std::io;
 use std::io::Write;
 use std::process::id;
+use pest::pratt_parser::Op;
 
 #[derive(Parser)]
 #[grammar = "pests/parser.pest"]
@@ -31,6 +32,8 @@ pub struct Checker<'a, W: Write> {
     // 作用域
     block_no: usize,
     check_results: Vec<PairCheckResult<'a>>,
+    // 当前函数调用
+    call_func: Option<String>,
 }
 
 impl<'a, W: Write> Checker<'a, W> {
@@ -46,6 +49,7 @@ impl<'a, W: Write> Checker<'a, W> {
             context_stack,
             check_results: Vec::new(),
             block_no: 0,
+            call_func: None,
         }
     }
     fn syn_check(&mut self) -> io::Result<()> {
@@ -85,6 +89,7 @@ impl<'a, W: Write> Checker<'a, W> {
                 self.func_dels.push(func_def);
                 self.block_no -= 1; // 离开函数作用域
                 self.context_stack.pop(); // 函数出栈
+                self.call_func = None; // 清楚函数调用记录
             }
             Rule::ConstDecl | Rule::VarDecl => {
                 let inner_pairs = pair.into_inner();
@@ -130,17 +135,17 @@ impl<'a, W: Write> Checker<'a, W> {
                         );
                         self.check_results.push(check_result);
                     } else {
-                        if defined && v {
-                            // 类型错误
-                            let check_result = PairCheckResult::new(
-                                line_no.to_string(),
-                                Some(CheckError::new(
-                                    ErrorKind::UnexpectedType,
-                                    Some(ident.to_string()),
-                                )),
-                            );
-                            self.check_results.push(check_result);
-                        }
+                        // if defined && v {
+                        //     // 类型错误
+                        //     let check_result = PairCheckResult::new(
+                        //         line_no.to_string(),
+                        //         Some(CheckError::new(
+                        //             ErrorKind::TypeMismatch,
+                        //             Some(ident.to_string()),
+                        //         )),
+                        //     );
+                        //     self.check_results.push(check_result);
+                        // }
                     }
                 }
             }
@@ -177,6 +182,15 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             Rule::Ident => {
                 let name = pair.as_str().to_string();
+                let line_no = pair.line_col().0;
+                if self.func_contains(&name) {
+                    //函数重复定义
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(ErrorKind::RedefineFunc,Some(name.clone()))),
+                    );
+                    self.check_results.push(check_result);
+                }
                 func_def.name = Some(name.clone()); // 收集函数名称
                 self.context_stack.push((name, None)); // 函数入栈
             }
@@ -210,13 +224,19 @@ impl<'a, W: Write> Checker<'a, W> {
                     }
                 }
             }
-            Rule::FuncFParams | Rule::Block | Rule::BlockItem | Rule::Exp | Rule::Stmt => {
+            Rule::FuncFParams |
+            Rule::Block |
+            Rule::BlockItem |
+            Rule::Exp |
+            Rule::AddExp |
+            Rule::MulExp |
+            Rule::UnaryExp |
+            Rule::Stmt => {
                 if pair.as_rule() == Rule::Block {
                     self.block_no += 1; // 进入一个新的函数作用域
                 }
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
-                    // dbg!(&inner_pair);
                     self.walk_func_def(inner_pair, func_def);
                 }
             }
@@ -226,6 +246,12 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             Rule::Decl => {
                 self.check(pair);
+            }
+            Rule::CallExp => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.walk_assign(inner_pair);
+                }
             }
             _ => {}
         }
@@ -249,24 +275,71 @@ impl<'a, W: Write> Checker<'a, W> {
                 self.check(pair);
             }
             Rule::Ident => {
+                // let i = a();
                 // 这里只有从CallExp的进来
                 // （1）函数未定义错误：
                 //  没有同一作用域级别或者上一层级的同名变量定义或者函数定义。
                 // （2）非函数调用错误：
                 //  存在同名变量且同名变量在所有同名函数和变量中作用域级别与当前作用域最接近，且所属层级要小于等于当前层级。
-                //  (3) 参数不适用错误：
-                //  参数数量和参数类型不一致 这个地方需要测试
                 let ident = pair.as_str();
+                // 记录一下当前调用的函数名称
+                self.call_func = Some(ident.to_string());
                 let line_no = pair.line_col().0;
-                if !self.func_contains(&ident)  {
+                let (no_var,_ ) = self.var_contains(&ident);
+                if !self.func_contains(&ident) && !no_var {
                     // 函数未定义
                     let check_result = PairCheckResult::new(
                         line_no.to_string(),
-                        Some(CheckError::new(ErrorKind::RedefineFunc,Some(ident.to_string()))),
+                        Some(CheckError::new(ErrorKind::UndefinedFunc,Some(ident.to_string()))),
                     );
                     self.check_results.push(check_result);
-                }else {
-                    // TODO
+                    return;
+                }
+                if !self.func_contains(&ident) && no_var {
+                    // 非函数调用错误
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(ErrorKind::UnlegalFuncCall,Some(ident.to_string()))),
+                    );
+                    self.check_results.push(check_result);
+                    return;
+                }
+            }
+            Rule::FuncRParams => {
+                // 1、校验参数个数是否一致
+                // 2、校验参数类型是否匹配
+                let value = pair.as_str();
+                let sources = value.split(',').collect::<Vec<_>>();
+                let source_types = sources.iter().map(|s|{
+                    return if s.contains("[") | s.contains("]") {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                }).collect::<Vec<_>>().join("");
+                let line_no = pair.line_col().0;
+                // 获取函数的参数类型
+                let func_ = self.func_dels.iter().find(|e| e.name == self.call_func);
+                if let Some(func) = func_ {
+                    let params = func.params.clone();
+                    let result = params
+                        .iter()
+                        .map(|p| {
+                            return if p.is_array_type() {
+                                "1"
+                            } else {
+                                "0"
+                            }
+                        })
+                        .collect::<Vec<_>>().join("");
+                    if source_types.len() != result.len() || source_types != result  //参数个数不一致 || 参数类型不一致 都输出参数不适用
+                    {
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(ErrorKind::UnlegalFuncCall,Some(value.to_string()))),
+                        );
+                        self.check_results.push(check_result);
+                    }
                 }
             }
             _ => {}
@@ -287,7 +360,17 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             Rule::Ident => {
-                def.name = Some(pair.as_str().to_string());
+                let ident = pair.as_str();
+                let line_no = pair.line_col().0;
+                let (defined,_) = self.var_contains(&ident);
+                if defined {
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(ErrorKind::RedefineVal,Some(ident.to_string()))),
+                    );
+                    self.check_results.push(check_result);
+                }
+                def.name = Some(ident.to_string());
             }
             Rule::ArrayDims => {
                 let inner_pairs = pair.into_inner();
@@ -493,7 +576,7 @@ pub enum ErrorKind {
     TypeMismatch = 5,
     ParamMismatch = 6,
     ReturnMismatch = 7,
-    UnexpectedType = 8,
+    Inappropriate = 8,
     UnexpectedOperator = 9,
     UnlegalFuncCall = 10,
     UnexpectedAssign = 11,
@@ -515,7 +598,7 @@ pub enum CheckError {
     TypeMismatch(ErrorKind, &'static str, Option<String>),
     ParamMismatch(ErrorKind, &'static str, Option<String>),
     ReturnMismatch(ErrorKind, &'static str, Option<String>),
-    UnexpectedType(ErrorKind, &'static str, Option<String>),
+    Inappropriate(ErrorKind, &'static str, Option<String>),
     UnexpectedOperator(ErrorKind, &'static str, Option<String>),
     UnlegalFuncCall(ErrorKind, &'static str, Option<String>),
     UnexpectedAssign(ErrorKind, &'static str, Option<String>),
@@ -544,8 +627,8 @@ impl CheckError {
             ErrorKind::ReturnMismatch => {
                 CheckError::ReturnMismatch(kind, "Return type mismatch", error_tip)
             }
-            ErrorKind::UnexpectedType => {
-                CheckError::UnexpectedType(kind, "Unexpected type", error_tip)
+            ErrorKind::Inappropriate => {
+                CheckError::Inappropriate(kind, "Function is not applicable for arguments", error_tip)
             }
             ErrorKind::UnexpectedOperator => {
                 CheckError::UnexpectedOperator(kind, "Unexpected operator", error_tip)
@@ -569,7 +652,7 @@ impl CheckError {
             | CheckError::TypeMismatch(kind, _, _)
             | CheckError::ParamMismatch(kind, _, _)
             | CheckError::ReturnMismatch(kind, _, _)
-            | CheckError::UnexpectedType(kind, _, _)
+            | CheckError::Inappropriate(kind, _, _)
             | CheckError::UnexpectedOperator(kind, _, _)
             | CheckError::UnlegalFuncCall(kind, _, _)
             | CheckError::UnexpectedAssign(kind, _, _)
@@ -586,7 +669,7 @@ impl CheckError {
             | CheckError::TypeMismatch(_, _, tip)
             | CheckError::ParamMismatch(_, _, tip)
             | CheckError::ReturnMismatch(_, _, tip)
-            | CheckError::UnexpectedType(_, _, tip)
+            | CheckError::Inappropriate(_, _, tip)
             | CheckError::UnexpectedOperator(_, _, tip)
             | CheckError::UnlegalFuncCall(_, _, tip)
             | CheckError::UnexpectedAssign(_, _, tip)
@@ -603,7 +686,7 @@ impl CheckError {
             | CheckError::TypeMismatch(_, msg, _)
             | CheckError::ParamMismatch(_, msg, _)
             | CheckError::ReturnMismatch(_, msg, _)
-            | CheckError::UnexpectedType(_, msg, _)
+            | CheckError::Inappropriate(_, msg, _)
             | CheckError::UnexpectedOperator(_, msg, _)
             | CheckError::UnlegalFuncCall(_, msg, _)
             | CheckError::UnexpectedAssign(_, msg, _)
@@ -659,8 +742,18 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_example() {
+    fn test_lab3_test() {
         let filename = FILE_PATH.to_string() + "test.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+        dbg!(checker);
+    }
+
+    #[test]
+    fn test_lab3_example01() {
+        let filename = FILE_PATH.to_string() + "example01.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut checker = Checker::new(&file, &mut binding);
