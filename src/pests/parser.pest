@@ -121,7 +121,9 @@ ReturnStmt = { Return ~ Exp? ~ Semicolon }
 Exp         = { AddExp }                         // SysY 的表达式是 int
 Cond        = { LOrExp }
 
-LVal        = { Ident ~ (OpenBracket ~ Exp ~ CloseBracket)* }
+LVal        = { Ident ~ (Array)* }
+
+Array = { OpenBracket ~ Exp ~ CloseBracket }
 
 PrimaryExp  = { OpenParen ~ Exp ~ CloseParen | LVal | Number }
 Number      = { IntConst }
