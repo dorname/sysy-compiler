@@ -212,9 +212,34 @@ impl<'a, W: Write> Checker<'a, W> {
             Rule::MulExp |
             Rule::UnaryExp |
             Rule::PrimaryExp |
+            Rule::Cond |
+            Rule::LOrExp |
+            Rule::LAndExp |
+            Rule::EqExp |
+            Rule::RelExp |
             Rule::Stmt => {
                 if pair.as_rule() == Rule::Block {
                     self.block_no += 1; // 进入一个新的函数作用域
+                }
+                if (pair.as_rule() == Rule::Exp||pair.as_rule()==Rule::Cond) && !self.is_assign_stmt(pair.clone()) {
+                    let line_no = pair.line_col().0;
+                    let mut inner_pairs = pair.clone().into_inner();
+                    let mut flag  = true;
+                    for inner_pair in inner_pairs {
+                        flag &= self.check_expr_w(inner_pair);
+                    }
+                    if !flag {
+                        // 存在不同类型的标识符进行基础运算
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(
+                                ErrorKind::TypeMismatchOp,
+                                Some(pair.clone().as_str().to_string()),
+                            )),
+                        );
+                        self.check_results.push(check_result);
+                    }
+                    return;
                 }
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
@@ -312,18 +337,26 @@ impl<'a, W: Write> Checker<'a, W> {
                         // 如果左右都是数组
                         // 求左边数组声明的维度
                         let mut left = 0;
+                        let mut left_all_size = 0;
                         if ori_ident.ends_with("]") {
                             left = ori_ident.chars().filter(|&c| c == '[').count();
                         }
-                        let left_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone()))).unwrap().array_dims.len();
+                        let l_var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone())));
+                        if let Some(x) = l_var {
+                            left_all_size = x.array_dims.len();
+                        }
                         // 求右边数组的维度
-                        let  mut right = 0;
+                        let mut right = 0;
+                        let mut right_all_size = 0;
                         let mut exp_ident = expr_rule.as_str().to_string();
                         if expr_rule.as_str().ends_with("]") {
                             right = expr_rule.as_str().chars().filter(|&c| c == '[').count();
                             exp_ident = expr_rule.as_str().split("[").collect::<Vec<&str>>()[0].trim().to_string();
                         }
-                        let right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
+                        let r_var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone())));
+                        if let Some(x) = r_var {
+                            right_all_size = x.array_dims.len();
+                        }
                         if (left_all_size-left) !=  (right_all_size-right) {
                             let check_result = PairCheckResult::new(
                                 line_no.to_string(),
@@ -333,15 +366,20 @@ impl<'a, W: Write> Checker<'a, W> {
                                 )),
                             );
                             self.check_results.push(check_result);
-                            return;
                         }
+                        return;
                     }
                     if v && v == !e_v2 {
+                        // 左边是数组 右边是纯int
                         let mut left = 0;
+                        let mut left_all_size = 0;
                         if ori_ident.ends_with("]") {
                             left = ori_ident.chars().filter(|&c| c == '[').count();
                         }
-                        let left_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone()))).unwrap().array_dims.len();
+                        let l_var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone())));
+                        if let Some(x) = l_var {
+                            left_all_size = x.array_dims.len();
+                        }
                         if left_all_size - left != 0 {
                             let check_result = PairCheckResult::new(
                                 line_no.to_string(),
@@ -362,7 +400,10 @@ impl<'a, W: Write> Checker<'a, W> {
                         if expr_rule.as_str().ends_with("]") {
                             right = expr_rule.as_str().chars().filter(|&c| c == '[').count();
                             exp_ident = expr_rule.as_str().split("[").collect::<Vec<&str>>()[0].trim().to_string();
-                            right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
+                        }
+                        let r_var =  self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone())));
+                        if let Some(x) = r_var {
+                            right_all_size = x.array_dims.len();
                         }
                         if  right != right_all_size {
                             let check_result = PairCheckResult::new(
@@ -392,21 +433,48 @@ impl<'a, W: Write> Checker<'a, W> {
                         }
                     }
                     if !e_v1 || e_v2 {
-                        let inner_pairs = expr_rule.clone().into_inner();
-                        for inner_pair in inner_pairs {
-                            if inner_pair.as_rule() == Rule::LVal {
-
+                        if v {
+                            let mut left = 0;
+                            let mut left_all_size = 0;
+                            if ori_ident.ends_with("]") {
+                                left = ori_ident.chars().filter(|&c| c == '[').count();
+                            }
+                            let l_var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone())));
+                            if let Some(x) = l_var {
+                                left_all_size = x.array_dims.len();
+                            }
+                            if left_all_size == left {
+                                return;
+                            }else{
+                                // 存在不同类型的标识符进行基础运算
+                                let check_result = PairCheckResult::new(
+                                    line_no.to_string(),
+                                    Some(CheckError::new(
+                                        ErrorKind::TypeMismatchOp,
+                                        Some(expr_rule.as_str().to_string()),
+                                    )),
+                                );
+                                self.check_results.push(check_result);
+                            }
+                        }else {
+                            let mut inner_pairs = expr_rule.clone().into_inner();
+                            let mut flag  = true;
+                            for inner_pair in inner_pairs {
+                                flag &= self.check_expr_w(inner_pair);
+                            }
+                            if !flag {
+                                // 存在不同类型的标识符进行基础运算
+                                let check_result = PairCheckResult::new(
+                                    line_no.to_string(),
+                                    Some(CheckError::new(
+                                        ErrorKind::TypeMismatchOp,
+                                        Some(expr_rule.as_str().to_string()),
+                                    )),
+                                );
+                                self.check_results.push(check_result);
                             }
                         }
-                        // 存在不同类型的标识符进行基础运算
-                        let check_result = PairCheckResult::new(
-                            line_no.to_string(),
-                            Some(CheckError::new(
-                                ErrorKind::TypeMismatchOp,
-                                Some(expr_rule.as_str().to_string()),
-                            )),
-                        );
-                        self.check_results.push(check_result);
+
                         return;
                     }
                 }
@@ -422,8 +490,54 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
-    /// 处理AddExp..等的维度问题
-    // fn handle_exp(&mut self,pair:Pair<Rule>) ->
+    /// 判断exp下面是否是赋值语句
+    fn is_assign_stmt(&self,pair:Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::AssignStmt => true,
+            _ => {
+                let inner_pairs = pair.into_inner();
+                let mut flag = false;
+                for inner_pair in inner_pairs {
+                    flag |= self.is_assign_stmt(inner_pair)
+                }
+                flag
+            }
+        }
+    }
+
+    /// 递归检查Exp维度问题是否一致
+    fn check_expr_w(&mut self,pair:Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::LVal => {
+                let inner_str = pair.as_str().trim().to_string();
+                if inner_str.ends_with("]"){
+                    let curr = inner_str.chars().filter(|&c| c == '[').count();
+                    let id = inner_str.split("[").collect::<Vec<&str>>()[0].to_string();
+                    let mut all = 0;
+                    let var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(id.clone())));
+                    if let Some(x) = var {
+                        all = x.array_dims.len();
+                    }
+                     curr == all
+                }else {
+                    let id = inner_str;
+                    let var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(id.clone())));
+                    if let Some(x) = var {
+                       return !x.is_array_type();
+                    }
+                    false
+                }
+            }
+            _ => {
+                let inner_pairs = pair.into_inner();
+                let mut flag = true;
+                for inner_pair in inner_pairs {
+                   flag &= self.check_expr_w(inner_pair);
+                }
+                flag
+            }
+        }
+    }
 
     fn expr_is_number(&mut self,pair: Pair<Rule>) -> bool {
         match pair.as_rule() {
