@@ -239,7 +239,6 @@ impl<'a, W: Write> Checker<'a, W> {
                         );
                         self.check_results.push(check_result);
                     }
-                    return;
                 }
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
@@ -253,7 +252,8 @@ impl<'a, W: Write> Checker<'a, W> {
                     if inner_pair.as_rule() == Rule::Ident {
                         let name = inner_pair.as_str().to_string();
                         let (v_defined,_) = self.var_contains(&name);
-                        if !v_defined {
+                        let f_defined = self.func_contains(&name);
+                        if !v_defined && !f_defined {
                             let check_result = PairCheckResult::new(
                                 line_no.to_string(),
                                 Some(CheckError::new(ErrorKind::UndefinedVal, Some(name.clone()))),
