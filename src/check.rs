@@ -61,7 +61,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            dbg!(&pairs);
+            // dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
@@ -356,13 +356,14 @@ impl<'a, W: Write> Checker<'a, W> {
                     }
                     if !v && e_v1 {
                         // 求右边数组的维度
-                        let  mut right = 0;
+                        let mut right = 0;
+                        let mut right_all_size = 0;
                         let mut exp_ident = expr_rule.as_str().to_string();
                         if expr_rule.as_str().ends_with("]") {
                             right = expr_rule.as_str().chars().filter(|&c| c == '[').count();
                             exp_ident = expr_rule.as_str().split("[").collect::<Vec<&str>>()[0].trim().to_string();
+                            right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
                         }
-                        let right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
                         if  right != right_all_size {
                             let check_result = PairCheckResult::new(
                                 line_no.to_string(),
@@ -391,15 +392,12 @@ impl<'a, W: Write> Checker<'a, W> {
                         }
                     }
                     if !e_v1 || e_v2 {
-                        // let inner_pairs = expr_rule.clone().into_inner();
-                        // for inner_pair in inner_pairs {
-                        //     match inner_pair.as_rule() {
-                        //         Rule::LVal => {
-                        //
-                        //         },
-                        //         _ => {}
-                        //     }
-                        // }
+                        let inner_pairs = expr_rule.clone().into_inner();
+                        for inner_pair in inner_pairs {
+                            if inner_pair.as_rule() == Rule::LVal {
+
+                            }
+                        }
                         // 存在不同类型的标识符进行基础运算
                         let check_result = PairCheckResult::new(
                             line_no.to_string(),
