@@ -459,9 +459,7 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             Rule::LVal => {
-                let line_no = pair.line_col().0;
                 let pair_str = pair.as_str();
-                let func_type = func_def.return_type.clone();
                 if pair_str.ends_with("]") {
                     let ident = pair.into_inner().next().unwrap();
                     self.walk_return_stmt(ident, func_def);
