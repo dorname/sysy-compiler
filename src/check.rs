@@ -228,7 +228,7 @@ impl<'a, W: Write> Checker<'a, W> {
                     self.expr_ident_count(pair.clone(),&mut idents);
                     if idents.len() > 1  {
                         let line_no = pair.line_col().0;
-                        let mut inner_pairs = pair.clone().into_inner();
+                        let inner_pairs = pair.clone().into_inner();
                         let mut flag  = true;
                         for inner_pair in inner_pairs {
                             flag &= self.check_expr_w(inner_pair);
@@ -506,8 +506,7 @@ impl<'a, W: Write> Checker<'a, W> {
             Rule::Number => {
                 collect.push(pair.as_str().to_string());
             }
-            Rule::Array => {}
-            Rule::FuncRParams => {}
+            Rule::Array | Rule::FuncRParams | Rule::FuncFParam | Rule::FuncFParams => {}
             _ => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
@@ -548,11 +547,8 @@ impl<'a, W: Write> Checker<'a, W> {
                      curr == all
                 }else {
                     let id = inner_str;
-                    let var = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(id.clone())));
-                    if let Some(x) = var {
-                       return !x.is_array_type();
-                    }
-                    false
+                    let (defined,v) = self.var_contains(&id);
+                    defined && !v
                 }
             }
             _ => {
