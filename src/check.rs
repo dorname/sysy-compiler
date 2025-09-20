@@ -62,7 +62,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            dbg!(&pairs);
+            // dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
