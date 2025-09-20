@@ -61,7 +61,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            // dbg!(&pairs);
+            dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
@@ -261,6 +261,16 @@ impl<'a, W: Write> Checker<'a, W> {
                 let (defined, v) = self.var_contains(&ident);
                 let f_defined = self.func_contains(&ident);
                 let defined = f_defined || defined;
+                if f_defined {
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(
+                            ErrorKind::UnexpectedFuncAssign,
+                            Some(ident.to_string()),
+                        )),
+                    );
+                    self.check_results.push(check_result);
+                }
                 // 不考虑数组的赋值语句校验
                 if !pair_str.contains("[") &&  !defined  {
                     // 变量未定义错误
@@ -272,15 +282,15 @@ impl<'a, W: Write> Checker<'a, W> {
                         )),
                     );
                     self.check_results.push(check_result);
-                    return;
                 }
                 if self.has_call(expr_rule.clone(),false) {
-                    for expr_pair in expr_rule.into_inner() {
+                    for expr_pair in expr_rule.clone().into_inner() {
                         self.walk_func_def(expr_pair, func_def);
                     }
-                    return;
+                    return ;
                 }
-                if self.expr_is_number(expr_rule.clone()) && defined && !v{
+                let expr_str = expr_rule.as_str();
+                if !expr_str.ends_with("]") && self.expr_is_number(expr_rule.clone()) && defined && !v{
                     return;
                 }
                 // e_v1 true => array
@@ -365,18 +375,42 @@ impl<'a, W: Write> Checker<'a, W> {
                             return;
                         }
                     }
-                    // if !e_v1 || e_v2 {
-                    //     // 存在不同类型的标识符进行基础运算
-                    //     let check_result = PairCheckResult::new(
-                    //         line_no.to_string(),
-                    //         Some(CheckError::new(
-                    //             ErrorKind::TypeMismatchOp,
-                    //             Some(expr_rule.as_str().to_string()),
-                    //         )),
-                    //     );
-                    //     self.check_results.push(check_result);
-                    //     return;
-                    // }
+                    // 左侧是整形 右侧也是整形但是增加了[ ] 变成了数组
+                    if !v && !e_v2 {
+                        let exp_ident = expr_rule.as_str().to_string();
+                        if exp_ident.as_str().ends_with("]") {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::NotArrayAssign,
+                                    Some(expr_rule.as_str().to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                            return;
+                        }
+                    }
+                    if !e_v1 || e_v2 {
+                        // let inner_pairs = expr_rule.clone().into_inner();
+                        // for inner_pair in inner_pairs {
+                        //     match inner_pair.as_rule() {
+                        //         Rule::LVal => {
+                        //
+                        //         },
+                        //         _ => {}
+                        //     }
+                        // }
+                        // 存在不同类型的标识符进行基础运算
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(
+                                ErrorKind::TypeMismatchOp,
+                                Some(expr_rule.as_str().to_string()),
+                            )),
+                        );
+                        self.check_results.push(check_result);
+                        return;
+                    }
                 }
 
             }
@@ -389,6 +423,9 @@ impl<'a, W: Write> Checker<'a, W> {
             _ => {}
         }
     }
+
+    /// 处理AddExp..等的维度问题
+    // fn handle_exp(&mut self,pair:Pair<Rule>) ->
 
     fn expr_is_number(&mut self,pair: Pair<Rule>) -> bool {
         match pair.as_rule() {
