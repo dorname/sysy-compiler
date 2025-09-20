@@ -10,6 +10,7 @@ use std::io;
 use std::io::Write;
 use std::ops::Add;
 use std::process::id;
+use clap::builder::Str;
 use pest::pratt_parser::Op;
 
 #[derive(Parser)]
@@ -61,7 +62,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            // dbg!(&pairs);
+            dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
@@ -221,24 +222,30 @@ impl<'a, W: Write> Checker<'a, W> {
                 if pair.as_rule() == Rule::Block {
                     self.block_no += 1; // 进入一个新的函数作用域
                 }
+                let t_str = pair.as_str();
                 if (pair.as_rule() == Rule::Exp||pair.as_rule()==Rule::Cond) && !self.is_assign_stmt(pair.clone()) {
-                    let line_no = pair.line_col().0;
-                    let mut inner_pairs = pair.clone().into_inner();
-                    let mut flag  = true;
-                    for inner_pair in inner_pairs {
-                        flag &= self.check_expr_w(inner_pair);
+                    let mut idents:Vec<String> = vec![];
+                    self.expr_ident_count(pair.clone(),&mut idents);
+                    if idents.len() > 1  {
+                        let line_no = pair.line_col().0;
+                        let mut inner_pairs = pair.clone().into_inner();
+                        let mut flag  = true;
+                        for inner_pair in inner_pairs {
+                            flag &= self.check_expr_w(inner_pair);
+                        }
+                        if !flag {
+                            // 存在不同类型的标识符进行基础运算
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::TypeMismatchOp,
+                                    Some(pair.clone().as_str().to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                        }
                     }
-                    if !flag {
-                        // 存在不同类型的标识符进行基础运算
-                        let check_result = PairCheckResult::new(
-                            line_no.to_string(),
-                            Some(CheckError::new(
-                                ErrorKind::TypeMismatchOp,
-                                Some(pair.clone().as_str().to_string()),
-                            )),
-                        );
-                        self.check_results.push(check_result);
-                    }
+
                 }
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
@@ -487,6 +494,21 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 递归统计expr有多少个ident
+    fn expr_ident_count(&mut self, pair:Pair<Rule>, collect:&mut Vec<String>) {
+        match pair.as_rule() {
+            Rule::Ident => {
+                collect.push(pair.as_str().to_string());
+            },
+            _ => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.expr_ident_count(inner_pair,collect);
+                }
+            }
         }
     }
 
