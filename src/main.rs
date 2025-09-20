@@ -6,9 +6,10 @@ mod format;
 mod lexer;
 mod utils;
 
-use crate::format::fmt;
+use crate::check::*;
 use lexer::*;
 use std::{env, fs};
+use std::io::{stderr, stdout};
 
 fn main() {
     // 收集命令行参数
@@ -26,5 +27,7 @@ fn main() {
     // 读取输入文件
     let input = fs::read_to_string(filename).expect("Failed to read file");
 
-    fmt(&input);
+    let mut binding = stderr();
+    let mut checker = Checker::new(&input, &mut binding);
+    checker.syn_check().unwrap();
 }

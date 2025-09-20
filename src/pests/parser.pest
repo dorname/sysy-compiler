@@ -102,15 +102,19 @@ Block       = { OpenBrace ~ ( BlockItem | ErrorStmt )* ~ CloseBrace }
 BlockItem   = { Decl | Stmt }
 
 Stmt        = {
-      LVal ~ Assign ~ Exp ~ Semicolon                     // 赋值
+      AssignStmt                    // 赋值
     | Exp? ~ Semicolon                                 // 表达式语句（可为空）
     | Block                                      // 语句块
     | If ~ OpenParen ~ Cond ~ CloseParen ~ Stmt ~ ( Else ~ Stmt )? // 条件语句
     | While ~ OpenParen ~ Cond ~ CloseParen ~ Stmt // 循环语句
     | Break ~ Semicolon // 跳出循环
     | Continue ~ Semicolon // 继续下一轮循环
-    | Return ~ Exp? ~ Semicolon // 返回语句（可无返回值）
+    | ReturnStmt // 返回语句（可无返回值）
 }
+
+AssignStmt = { LVal ~ Assign ~ Exp ~ Semicolon  }
+
+ReturnStmt = { Return ~ Exp? ~ Semicolon }
 
 
 // ---------- 表达式 ----------

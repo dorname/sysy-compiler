@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::io;
 use std::io::Write;
+use std::ops::Add;
 use std::process::id;
 use pest::pratt_parser::Op;
 
@@ -37,7 +38,7 @@ pub struct Checker<'a, W: Write> {
 }
 
 impl<'a, W: Write> Checker<'a, W> {
-    fn new(input: &'a str, writer: &'a mut W) -> Self {
+    pub fn new(input: &'a str, writer: &'a mut W) -> Self {
         let mut context_stack = Vec::new();
         context_stack.push(("global".to_string(), None));
         Checker {
@@ -52,7 +53,7 @@ impl<'a, W: Write> Checker<'a, W> {
             call_func: None,
         }
     }
-    fn syn_check(&mut self) -> io::Result<()> {
+    pub fn syn_check(&mut self) -> io::Result<()> {
         if let Some(mut pairs) = parse_file(self.input) {
             // 把File规则的第一个pair拿出来
             let pairs = pairs.next().unwrap();
@@ -60,11 +61,21 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            dbg!(&pairs);
+            // dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
-            writeln!(self.writer, "{}", self.output)?;
+            // 构建检查结果
+            for err in &mut self.check_results {
+                let _ = err.build_str();
+                let out_str = err.output.to_string() + "\n";
+                self.output.push_str(&out_str);
+            }
+            if self.check_results.is_empty() {
+                writeln!(self.writer, "{}", "No semantic errors in the program!")?;
+            }else {
+                writeln!(self.writer, "{}", self.output)?;
+            }
         } else {
             writeln!(self.writer, "Syntax error")?;
         }
@@ -115,37 +126,6 @@ impl<'a, W: Write> Checker<'a, W> {
                             }
                         }
                         _ => {}
-                    }
-                }
-            }
-            Rule::LVal => {
-                let line_no = pair.line_col().0;
-                // 不考虑数组的赋值语句校验
-                if !pair.as_str().contains("[") {
-                    let ident = pair.into_inner().next().unwrap().as_str();
-                    let (defined, v) = self.var_contains(ident);
-                    if !defined {
-                        // 变量未定义错误
-                        let check_result = PairCheckResult::new(
-                            line_no.to_string(),
-                            Some(CheckError::new(
-                                ErrorKind::UndefinedVal,
-                                Some(ident.to_string()),
-                            )),
-                        );
-                        self.check_results.push(check_result);
-                    } else {
-                        // if defined && v {
-                        //     // 类型错误
-                        //     let check_result = PairCheckResult::new(
-                        //         line_no.to_string(),
-                        //         Some(CheckError::new(
-                        //             ErrorKind::TypeMismatch,
-                        //             Some(ident.to_string()),
-                        //         )),
-                        //     );
-                        //     self.check_results.push(check_result);
-                        // }
                     }
                 }
             }
@@ -231,6 +211,7 @@ impl<'a, W: Write> Checker<'a, W> {
             Rule::AddExp |
             Rule::MulExp |
             Rule::UnaryExp |
+            Rule::PrimaryExp |
             Rule::Stmt => {
                 if pair.as_rule() == Rule::Block {
                     self.block_no += 1; // 进入一个新的函数作用域
@@ -241,8 +222,21 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             Rule::LVal => {
-                // 只校验单值
-                self.check(pair);
+                let line_no = pair.line_col().0;
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if inner_pair.as_rule() == Rule::Ident {
+                        let name = inner_pair.as_str().to_string();
+                        let (v_defined,_) = self.var_contains(&name);
+                        if !v_defined {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(ErrorKind::UndefinedVal, Some(name.clone()))),
+                            );
+                            self.check_results.push(check_result);
+                        }
+                    }
+                }
             }
             Rule::Decl => {
                 self.check(pair);
@@ -253,7 +247,312 @@ impl<'a, W: Write> Checker<'a, W> {
                     self.walk_assign(inner_pair);
                 }
             }
+            Rule::AssignStmt => {
+                let line_no = pair.line_col().0;
+                let pair_str = pair.as_str();
+                let mut inner_pairs = pair.into_inner();
+                let ori_ident = inner_pairs.next().unwrap().as_str().trim().to_string();
+                let _ = inner_pairs.next().unwrap().as_str().to_string();
+                let expr_rule = inner_pairs.next().unwrap();
+                let mut ident = ori_ident.clone();
+                if ident.ends_with("]") {
+                    ident = ident.split("[").collect::<Vec<&str>>()[0].to_string();
+                }
+                let (defined, v) = self.var_contains(&ident);
+                let f_defined = self.func_contains(&ident);
+                let defined = f_defined || defined;
+                // 不考虑数组的赋值语句校验
+                if !pair_str.contains("[") &&  !defined  {
+                    // 变量未定义错误
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(
+                            ErrorKind::UndefinedVal,
+                            Some(ident.to_string()),
+                        )),
+                    );
+                    self.check_results.push(check_result);
+                    return;
+                }
+                if self.has_call(expr_rule.clone(),false) {
+                    for expr_pair in expr_rule.into_inner() {
+                        self.walk_func_def(expr_pair, func_def);
+                    }
+                    return;
+                }
+                if self.expr_is_number(expr_rule.clone()) && defined && !v{
+                    return;
+                }
+                // e_v1 true => array
+                // e_v2 false => int
+                let (e_v1,e_defined) = self.check_expr(expr_rule.clone(),1);
+                let (e_v2,_) = self.check_expr(expr_rule.clone(),0);  //是否完全由int变量组成
+                if !e_defined {
+                    // 变量未定义错误
+                    let check_result = PairCheckResult::new(
+                        line_no.to_string(),
+                        Some(CheckError::new(
+                            ErrorKind::UndefinedVal,
+                            Some(expr_rule.as_str().to_string()),
+                        )),
+                    );
+                    self.check_results.push(check_result);
+                }else {
+                    if v == e_v1 && v {
+                        // 如果左右都是数组
+                        // 求左边数组声明的维度
+                        let mut left = 0;
+                        if ori_ident.ends_with("]") {
+                            left = ori_ident.chars().filter(|&c| c == '[').count();
+                        }
+                        let left_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone()))).unwrap().array_dims.len();
+                        // 求右边数组的维度
+                        let  mut right = 0;
+                        let mut exp_ident = expr_rule.as_str().to_string();
+                        if expr_rule.as_str().ends_with("]") {
+                            right = expr_rule.as_str().chars().filter(|&c| c == '[').count();
+                            exp_ident = expr_rule.as_str().split("[").collect::<Vec<&str>>()[0].trim().to_string();
+                        }
+                        let right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
+                        if (left_all_size-left) !=  (right_all_size-right) {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::TypeMismatch,
+                                    Some(expr_rule.as_str().to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                            return;
+                        }
+                    }
+                    if v && v == !e_v2 {
+                        let mut left = 0;
+                        if ori_ident.ends_with("]") {
+                            left = ori_ident.chars().filter(|&c| c == '[').count();
+                        }
+                        let left_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.clone()))).unwrap().array_dims.len();
+                        if left_all_size - left != 0 {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::TypeMismatch,
+                                    Some(expr_rule.as_str().to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                            return;
+                        }
+                    }
+                    if !v && e_v1 {
+                        // 求右边数组的维度
+                        let  mut right = 0;
+                        let mut exp_ident = expr_rule.as_str().to_string();
+                        if expr_rule.as_str().ends_with("]") {
+                            right = expr_rule.as_str().chars().filter(|&c| c == '[').count();
+                            exp_ident = expr_rule.as_str().split("[").collect::<Vec<&str>>()[0].trim().to_string();
+                        }
+                        let right_all_size = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(exp_ident.clone()))).unwrap().array_dims.len();
+                        if  right != right_all_size {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::TypeMismatch,
+                                    Some(expr_rule.as_str().to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                            return;
+                        }
+                    }
+                    // if !e_v1 || e_v2 {
+                    //     // 存在不同类型的标识符进行基础运算
+                    //     let check_result = PairCheckResult::new(
+                    //         line_no.to_string(),
+                    //         Some(CheckError::new(
+                    //             ErrorKind::TypeMismatchOp,
+                    //             Some(expr_rule.as_str().to_string()),
+                    //         )),
+                    //     );
+                    //     self.check_results.push(check_result);
+                    //     return;
+                    // }
+                }
+
+            }
+            Rule::ReturnStmt => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.walk_return_stmt(inner_pair, func_def);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn expr_is_number(&mut self,pair: Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::Number => true,
+            Rule::Ident => false,
+            _ => {
+                let inner_pairs = pair.into_inner();
+                let mut is_number = false;
+                for inner_pair in inner_pairs {
+                    is_number = is_number || self.expr_is_number(inner_pair);
+                }
+                is_number
+            }
+
+        }
+    }
+
+    fn expr_is_arr(&mut self,pair: Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::Ident => {
+                let name = pair.as_str().to_string();
+                self.var_contains(&name).1
+            }
+            _ => {
+                let inner_pairs = pair.into_inner();
+                let mut is_func = false;
+                for inner_pair in inner_pairs {
+                    is_func = is_func || self.expr_is_arr(inner_pair);
+                }
+                is_func
+            }
+
+        }
+    }
+
+    fn walk_return_stmt(&mut self, pair: Pair<Rule>,func_def: &mut FuncDef) {
+        match pair.as_rule() {
+            Rule::Ident => {
+                let line_no = pair.line_col().0;
+                let pair_str = pair.as_str();
+                let func_type = func_def.return_type.clone();
+                let (v_defined,v) = self.var_contains(&pair_str);
+                let f_defined = self.func_contains(&pair_str);
+                if let Some(func_type) = func_type {
+                    if f_defined || v {
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(
+                                ErrorKind::ReturnMismatch,
+                                Some(pair_str.to_string()),
+                            )),
+                        );
+                        self.check_results.push(check_result);
+                        return;
+                    }
+                    if v_defined && !v {
+                        if func_type == "void".to_string() {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(
+                                    ErrorKind::ReturnMismatch,
+                                    Some(pair_str.to_string()),
+                                )),
+                            );
+                            self.check_results.push(check_result);
+                        }
+                    }
+                }
+            }
+            Rule::LVal => {
+                let line_no = pair.line_col().0;
+                let pair_str = pair.as_str();
+                let func_type = func_def.return_type.clone();
+                if pair_str.ends_with("]") {
+                    let ident = pair.into_inner().next().unwrap();
+                    self.walk_return_stmt(ident, func_def);
+                }else {
+                    for inner_pair in pair.into_inner() {
+                        self.walk_return_stmt(inner_pair, func_def);
+                    }
+                }
+            }
+            Rule::Number => {
+                let line_no = pair.line_col().0;
+                let pair_str = pair.as_str();
+                let func_type = func_def.return_type.clone();
+                if let Some(func_type) = func_type {
+                    if func_type == "void".to_string() {
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(
+                                ErrorKind::ReturnMismatch,
+                                Some(pair_str.to_string()),
+                            )),
+                        );
+                        self.check_results.push(check_result);
+                    }
+                }
+
+            }
+            _ => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.walk_return_stmt(inner_pair,func_def);
+                }
+            }
+        }
+    }
+
+
+    /// 判断一个ruLe下是否有callExp
+    fn has_call(&self,pair:Pair<Rule>,target:bool) -> bool {
+        if pair.as_rule() == Rule::CallExp {
+             true
+        }else {
+            let inner_pairs = pair.into_inner();
+            let mut target = target;
+            for inner_pair in inner_pairs {
+                target = target || self.has_call(inner_pair,target);
+            }
+            target
+        }
+    }
+
+    /// check_op 1 时
+    /// 假设返回值为 x
+    /// x.1 为 true 表示表达式都是定义过的标识符
+    /// x.1 为 false 表示表达式存在至少一个未定义的标识符
+    /// 如果 x.0 为true  => 表达式全部都是数组类型
+    /// 如果 x.0 为false => 表达式中至少存在一个int类型变量
+    /// check_op 0 时
+    /// 如果 x.0 为false => 表达式全部都是int类型
+    /// 如果 x.0 为true  => 表达式至少存在一个数组类型变量
+    /// x.1 无作用
+    fn check_expr(&mut self,p:Pair<Rule>,check_op:u8)->(bool,bool) {
+        match p.as_rule() {
+            Rule::Ident => {
+                let p = p.as_str().to_string();
+                let (defined, v) = self.var_contains(&p);
+                let f_defined = self.func_contains(&p);
+                (v,defined||f_defined)
+            }
+            _ => {
+                let inner_pairs = p.into_inner();
+                let mut results = vec![];
+                for inner_pair in inner_pairs {
+                    results.push(self.check_expr(inner_pair,check_op));
+                }
+                let mut is_arr = if check_op == 1 {
+                    (true, true)
+                }else {
+                    (false, false)
+                };
+                if check_op == 1 {
+                    is_arr = results.iter().copied().fold(is_arr, |(v, d), (v1, d1)| {
+                        (v && v1, d && d1)
+                    });
+                }else {
+                    is_arr = results.iter().copied().fold(is_arr, |(v, d), (v1, d1)| {
+                        (v || v1, d && d1)
+                    });
+                }
+                is_arr
+            }
         }
     }
     fn walk_assign(&mut self,pair: Pair<Rule>) {
@@ -271,8 +570,21 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             Rule::LVal => {
-                // 去校验赋值表达式使用的变量是否已经定义
-                self.check(pair);
+                let line_no = pair.line_col().0;
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if inner_pair.as_rule() == Rule::Ident {
+                        let name = inner_pair.as_str().to_string();
+                        let (v_defined,_) = self.var_contains(&name);
+                        if !v_defined {
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(ErrorKind::UndefinedVal, Some(name.clone()))),
+                            );
+                            self.check_results.push(check_result);
+                        }
+                    }
+                }
             }
             Rule::Ident => {
                 // let i = a();
@@ -287,13 +599,18 @@ impl<'a, W: Write> Checker<'a, W> {
                 let line_no = pair.line_col().0;
                 let (no_var,_ ) = self.var_contains(&ident);
                 if !self.func_contains(&ident) && !no_var {
-                    // 函数未定义
-                    let check_result = PairCheckResult::new(
-                        line_no.to_string(),
-                        Some(CheckError::new(ErrorKind::UndefinedFunc,Some(ident.to_string()))),
-                    );
-                    self.check_results.push(check_result);
-                    return;
+                    if let Some((name, _)) = self.get_current_context() {
+                        // 如果当前函数不是递归
+                        if *name != ident.to_string() {
+                            // 函数未定义
+                            let check_result = PairCheckResult::new(
+                                line_no.to_string(),
+                                Some(CheckError::new(ErrorKind::UndefinedFunc,Some(ident.to_string()))),
+                            );
+                            self.check_results.push(check_result);
+                            return;
+                        }
+                    }
                 }
                 if !self.func_contains(&ident) && no_var {
                     // 非函数调用错误
@@ -336,7 +653,7 @@ impl<'a, W: Write> Checker<'a, W> {
                     {
                         let check_result = PairCheckResult::new(
                             line_no.to_string(),
-                            Some(CheckError::new(ErrorKind::UnlegalFuncCall,Some(value.to_string()))),
+                            Some(CheckError::new(ErrorKind::Inappropriate,Some(value.to_string()))),
                         );
                         self.check_results.push(check_result);
                     }
@@ -364,11 +681,14 @@ impl<'a, W: Write> Checker<'a, W> {
                 let line_no = pair.line_col().0;
                 let (defined,_) = self.var_contains(&ident);
                 if defined {
-                    let check_result = PairCheckResult::new(
-                        line_no.to_string(),
-                        Some(CheckError::new(ErrorKind::RedefineVal,Some(ident.to_string()))),
-                    );
-                    self.check_results.push(check_result);
+                    let defined_belongs = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.to_string()))).unwrap().belongs_to;
+                    if self.block_no == defined_belongs {  // 同一个作用域内多次定义才能被认定为重复定义
+                        let check_result = PairCheckResult::new(
+                            line_no.to_string(),
+                            Some(CheckError::new(ErrorKind::RedefineVal,Some(ident.to_string()))),
+                        );
+                        self.check_results.push(check_result);
+                    }
                 }
                 def.name = Some(ident.to_string());
             }
@@ -555,7 +875,7 @@ impl<'a> PairCheckResult<'a> {
     fn build_str(&mut self) {
         self.output = if let Some(e) = &self.error_type {
             Cow::Owned(format!(
-                "Error type {} at line{}: {}",
+                "Error type {} at Line {}: {}",
                 e.get_kind(),
                 self.line_no,
                 e.build_str()
@@ -574,12 +894,12 @@ pub enum ErrorKind {
     RedefineVal = 3,
     RedefineFunc = 4,
     TypeMismatch = 5,
-    ParamMismatch = 6,
+    TypeMismatchOp = 6,
     ReturnMismatch = 7,
     Inappropriate = 8,
-    UnexpectedOperator = 9,
+    NotArrayAssign = 9,
     UnlegalFuncCall = 10,
-    UnexpectedAssign = 11,
+    UnexpectedFuncAssign = 11,
     Other = 0,
 }
 
@@ -596,12 +916,12 @@ pub enum CheckError {
     RedefineVal(ErrorKind, &'static str, Option<String>),
     RedefineFunc(ErrorKind, &'static str, Option<String>),
     TypeMismatch(ErrorKind, &'static str, Option<String>),
-    ParamMismatch(ErrorKind, &'static str, Option<String>),
+    TypeMismatchOp(ErrorKind, &'static str, Option<String>),
     ReturnMismatch(ErrorKind, &'static str, Option<String>),
     Inappropriate(ErrorKind, &'static str, Option<String>),
-    UnexpectedOperator(ErrorKind, &'static str, Option<String>),
+    NotArrayAssign(ErrorKind, &'static str, Option<String>),
     UnlegalFuncCall(ErrorKind, &'static str, Option<String>),
-    UnexpectedAssign(ErrorKind, &'static str, Option<String>),
+    UnexpectedFuncAssign(ErrorKind, &'static str, Option<String>),
     Other(ErrorKind, &'static str, Option<String>),
 }
 
@@ -620,24 +940,24 @@ impl CheckError {
             ErrorKind::RedefineFunc => {
                 CheckError::RedefineFunc(kind, "Redefined function", error_tip)
             }
-            ErrorKind::TypeMismatch => CheckError::TypeMismatch(kind, "Type mismatch", error_tip),
-            ErrorKind::ParamMismatch => {
-                CheckError::ParamMismatch(kind, "Parameter mismatch", error_tip)
+            ErrorKind::TypeMismatch => CheckError::TypeMismatch(kind, "Type mismatched for assignment", error_tip),
+            ErrorKind::TypeMismatchOp => {
+                CheckError::TypeMismatchOp(kind, "Type mismatched for op", error_tip)
             }
             ErrorKind::ReturnMismatch => {
-                CheckError::ReturnMismatch(kind, "Return type mismatch", error_tip)
+                CheckError::ReturnMismatch(kind, "Type mismatched for return", error_tip)
             }
             ErrorKind::Inappropriate => {
                 CheckError::Inappropriate(kind, "Function is not applicable for arguments", error_tip)
             }
-            ErrorKind::UnexpectedOperator => {
-                CheckError::UnexpectedOperator(kind, "Unexpected operator", error_tip)
+            ErrorKind::NotArrayAssign => {
+                CheckError::NotArrayAssign(kind, "Not an array", error_tip)
             }
             ErrorKind::UnlegalFuncCall => {
                 CheckError::UnlegalFuncCall(kind, "Illegal function call", error_tip)
             }
-            ErrorKind::UnexpectedAssign => {
-                CheckError::UnexpectedAssign(kind, "Unexpected assignment", error_tip)
+            ErrorKind::UnexpectedFuncAssign => {
+                CheckError::UnexpectedFuncAssign(kind, "The left-hand side of an assignment must be a variable.", error_tip)
             }
             _ => CheckError::Other(kind, "Other error", error_tip),
         }
@@ -650,12 +970,12 @@ impl CheckError {
             | CheckError::RedefineVal(kind, _, _)
             | CheckError::RedefineFunc(kind, _, _)
             | CheckError::TypeMismatch(kind, _, _)
-            | CheckError::ParamMismatch(kind, _, _)
+            | CheckError::TypeMismatchOp(kind, _, _)
             | CheckError::ReturnMismatch(kind, _, _)
             | CheckError::Inappropriate(kind, _, _)
-            | CheckError::UnexpectedOperator(kind, _, _)
+            | CheckError::NotArrayAssign(kind, _, _)
             | CheckError::UnlegalFuncCall(kind, _, _)
-            | CheckError::UnexpectedAssign(kind, _, _)
+            | CheckError::UnexpectedFuncAssign(kind, _, _)
             | CheckError::Other(kind, _, _) => *kind,
         }
     }
@@ -667,12 +987,12 @@ impl CheckError {
             | CheckError::RedefineVal(_, _, tip)
             | CheckError::RedefineFunc(_, _, tip)
             | CheckError::TypeMismatch(_, _, tip)
-            | CheckError::ParamMismatch(_, _, tip)
+            | CheckError::TypeMismatchOp(_, _, tip)
             | CheckError::ReturnMismatch(_, _, tip)
             | CheckError::Inappropriate(_, _, tip)
-            | CheckError::UnexpectedOperator(_, _, tip)
+            | CheckError::NotArrayAssign(_, _, tip)
             | CheckError::UnlegalFuncCall(_, _, tip)
-            | CheckError::UnexpectedAssign(_, _, tip)
+            | CheckError::UnexpectedFuncAssign(_, _, tip)
             | CheckError::Other(_, _, tip) => tip.clone(),
         }
     }
@@ -684,12 +1004,12 @@ impl CheckError {
             | CheckError::RedefineVal(_, msg, _)
             | CheckError::RedefineFunc(_, msg, _)
             | CheckError::TypeMismatch(_, msg, _)
-            | CheckError::ParamMismatch(_, msg, _)
+            | CheckError::TypeMismatchOp(_, msg, _)
             | CheckError::ReturnMismatch(_, msg, _)
             | CheckError::Inappropriate(_, msg, _)
-            | CheckError::UnexpectedOperator(_, msg, _)
+            | CheckError::NotArrayAssign(_, msg, _)
             | CheckError::UnlegalFuncCall(_, msg, _)
-            | CheckError::UnexpectedAssign(_, msg, _)
+            | CheckError::UnexpectedFuncAssign(_, msg, _)
             | CheckError::Other(_, msg, _) => msg,
         }
     }
@@ -748,7 +1068,6 @@ mod tests {
         let mut binding = stdout();
         let mut checker = Checker::new(&file, &mut binding);
         checker.syn_check().unwrap();
-        dbg!(checker);
     }
 
     #[test]
@@ -758,6 +1077,70 @@ mod tests {
         let mut binding = stdout();
         let mut checker = Checker::new(&file, &mut binding);
         checker.syn_check().unwrap();
-        dbg!(checker);
+    }
+
+    #[test]
+    fn test_lab3_normaltest01() {
+        let filename = FILE_PATH.to_string() + "normaltest01.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest02() {
+        let filename = FILE_PATH.to_string() + "normaltest02.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest03() {
+        let filename = FILE_PATH.to_string() + "normaltest03.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+
+    #[test]
+    fn test_lab3_normaltest04() {
+        let filename = FILE_PATH.to_string() + "normaltest04.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+
+    #[test]
+    fn test_lab3_normaltest05() {
+        let filename = FILE_PATH.to_string() + "normaltest05.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest06() {
+        let filename = FILE_PATH.to_string() + "normaltest06.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest07() {
+        let filename = FILE_PATH.to_string() + "normaltest07.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
     }
 }
