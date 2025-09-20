@@ -503,6 +503,7 @@ impl<'a, W: Write> Checker<'a, W> {
             Rule::Ident => {
                 collect.push(pair.as_str().to_string());
             },
+            Rule::FuncRParams => {}
             _ => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
