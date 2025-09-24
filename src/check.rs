@@ -1304,6 +1304,8 @@ mod tests {
     use crate::check::Checker;
     use crate::format::Formatter;
     use std::io::stdout;
+    use crate::lexer::tokenizer;
+
     const FILE_PATH: &str = "tests/lab3/";
     #[test]
     #[ignore]
@@ -1370,6 +1372,25 @@ mod tests {
         let mut binding = stdout();
         let mut checker = Checker::new(&file, &mut binding);
         checker.syn_check().unwrap();
+
+
+        // 1、把内容输出内存缓冲区
+        let mut buf = Vec::<u8>::new();
+        let filename = FILE_PATH.to_string() + "simple.in";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let _ = tokenizer(&file, &mut buf);
+
+        let mut actual = String::from_utf8(buf).unwrap();
+        // 根据操作系统替换换行符
+        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
+        actual = actual.replace("\r\n", "\n").replace('\r', "\n");
+        // 再按平台输出
+        if cfg!(windows) {
+            actual = actual.replace('\n', "\r\n");
+        }
+        let expected_filename = FILE_PATH.to_string() + "simple.out";
+        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
+        assert_eq!(actual, expected);
     }
 
     #[test]
