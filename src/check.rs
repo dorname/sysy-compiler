@@ -95,13 +95,47 @@ impl<'a, W: Write> Checker<'a, W> {
                 let line_no = pair.line_col().0;
                 let inner_pairs = pair.into_inner();
                 let mut func_def = FuncDef::new(line_no);
+                let mut should_skip = false;
+                
                 for inner_pair in inner_pairs {
-                    self.walk_func_def(inner_pair, &mut func_def);
+                    // 如果函数重复定义，跳过整个函数
+                    if should_skip {
+                        continue;
+                    }
+                    
+                    // 检查函数名是否重复定义
+                    if inner_pair.as_rule() == Rule::Ident {
+                        let name = inner_pair.as_str().to_string();
+                        if self.func_contains(&name) {
+                            // 函数重复定义，报错并标记跳过
+                            let check_result = PairCheckResult::new(
+                                inner_pair.line_col().0.to_string(),
+                                Some(CheckError::new(ErrorKind::RedefineFunc, Some(name.clone()))),
+                            );
+                            self.check_results.push(check_result);
+                            should_skip = true;
+                            continue;
+                        }
+                        func_def.name = Some(name.clone());
+                        self.context_stack.push((name, None));
+                    } else {
+                        self.walk_func_def(inner_pair, &mut func_def);
+                    }
                 }
-                self.func_dels.push(func_def);
-                self.block_no -= 1; // 离开函数作用域
-                self.context_stack.pop(); // 函数出栈
-                self.call_func = None; // 清楚函数调用记录
+                
+                // 只有在没有错误的情况下才添加函数定义
+                if !should_skip {
+                    self.func_dels.push(func_def);
+                }
+                
+                // 清理作用域状态
+                if self.block_no > 0 {
+                    self.block_no -= 1; // 离开函数作用域
+                }
+                if self.context_stack.len() > 1 {
+                    self.context_stack.pop(); // 函数出栈
+                }
+                self.call_func = None; // 清除函数调用记录
             }
             Rule::ConstDecl | Rule::VarDecl => {
                 let inner_pairs = pair.into_inner();
@@ -163,17 +197,8 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             Rule::Ident => {
                 let name = pair.as_str().to_string();
-                let line_no = pair.line_col().0;
-                if self.func_contains(&name) {
-                    //函数重复定义
-                    let check_result = PairCheckResult::new(
-                        line_no.to_string(),
-                        Some(CheckError::new(ErrorKind::RedefineFunc,Some(name.clone()))),
-                    );
-                    self.check_results.push(check_result);
-                }
                 func_def.name = Some(name.clone()); // 收集函数名称
-                self.context_stack.push((name, None)); // 函数入栈
+                // 注意：函数重复定义检查已经在上层的check方法中处理了
             }
             Rule::FuncFParam => {
                 let line_no = pair.line_col().0;
@@ -225,13 +250,8 @@ impl<'a, W: Write> Checker<'a, W> {
                 if (pair.as_rule() == Rule::Exp||pair.as_rule()==Rule::Cond) && !self.is_assign_stmt(pair.clone()) {
                     if self.has_operator(pair.clone()) {
                         let line_no = pair.line_col().0;
-                        let inner_pairs = pair.clone().into_inner();
-                        let mut flag  = true;
-                        for inner_pair in inner_pairs {
-                            flag &= self.check_expr_w(inner_pair);
-                        }
-                        if !flag {
-                            // 存在不同类型的标识符进行基础运算
+                        // 检查运算符类型匹配 - 按照README要求，如果第一个操作数不匹配就直接报错
+                        if !self.check_operator_type_match(pair.clone()) {
                             self.add_check_result(line_no, ErrorKind::TypeMismatchOp, Some(pair.clone().as_str().to_string()));
                         }
                     }
@@ -249,6 +269,9 @@ impl<'a, W: Write> Checker<'a, W> {
                         let name = inner_pair.as_str().to_string();
                         let (v_defined,_) = self.var_contains(&name);
                         let f_defined = self.func_contains(&name);
+                        
+                        // 只有在既不是变量也不是函数的情况下才报告未定义
+                        // 如果是函数名但用于运算，会在运算符类型检查中报告错误类型6
                         if !v_defined && !f_defined {
                             self.add_check_result(line_no,ErrorKind::UndefinedVal,Some(name.clone()));
                         }
@@ -291,6 +314,14 @@ impl<'a, W: Write> Checker<'a, W> {
                         self.walk_func_def(expr_pair, func_def);
                     }
                     return ;
+                }
+                
+                // 优先检查运算符类型匹配
+                if self.has_operator(expr_rule.clone()) {
+                    if !self.check_operator_type_match(expr_rule.clone()) {
+                        self.add_check_result(line_no, ErrorKind::TypeMismatchOp, Some(expr_rule.as_str().to_string()));
+                        return;
+                    }
                 }
                 let expr_str = expr_rule.as_str();
                 if !expr_str.ends_with("]") && self.expr_is_number(expr_rule.clone()) && defined && !v{
@@ -393,7 +424,7 @@ impl<'a, W: Write> Checker<'a, W> {
                                 self.add_check_result(line_no,ErrorKind::TypeMismatchOp,Some(expr_rule.as_str().to_string()));
                             }
                         }else {
-                            let mut inner_pairs = expr_rule.clone().into_inner();
+                            let inner_pairs = expr_rule.clone().into_inner();
                             let mut flag  = true;
                             for inner_pair in inner_pairs {
                                 flag &= self.check_expr_w(inner_pair);
@@ -443,6 +474,148 @@ impl<'a, W: Write> Checker<'a, W> {
                     result |= self.has_operator(inner_pair);
                 }
                 result
+            }
+        }
+    }
+
+    /// 检查运算符类型匹配 - 按照README要求，如果第一个操作数不匹配就直接报错
+    fn check_operator_type_match(&mut self, pair: Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::AddExp | Rule::MulExp | Rule::RelExp | Rule::EqExp | 
+            Rule::LAndExp | Rule::LOrExp => {
+                let inner_pairs: Vec<_> = pair.into_inner().collect();
+                if inner_pairs.len() > 1 {
+                    // 有运算符的表达式，检查第一个操作数
+                    let first_operand = &inner_pairs[0];
+                    return self.check_operand_is_int_type(first_operand.clone());
+                }
+                // 单个操作数，递归检查
+                if let Some(first) = inner_pairs.first() {
+                    return self.check_operator_type_match(first.clone());
+                }
+                true
+            }
+            Rule::UnaryExp => {
+                let inner_pairs: Vec<_> = pair.into_inner().collect();
+                if let Some(first) = inner_pairs.first() {
+                    return self.check_operator_type_match(first.clone());
+                }
+                true
+            }
+            Rule::PrimaryExp | Rule::LVal | Rule::Number => {
+                self.check_operand_is_int_type(pair)
+            }
+            Rule::CallExp => {
+                // 函数调用应该返回int类型，这里暂时返回true
+                // 具体的函数返回类型检查在其他地方处理
+                true
+            }
+            _ => {
+                // 其他情况递归检查
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if !self.check_operator_type_match(inner_pair) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// 检查操作数是否为int类型（非数组、非函数）
+    fn check_operand_is_int_type(&mut self, pair: Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::Number => true, // 数字字面量是int类型
+            Rule::LVal => {
+                let pair_str = pair.as_str();
+                if pair_str.ends_with("]") {
+                    // 数组元素访问，需要检查维度
+                    let ident = pair_str.split("[").collect::<Vec<&str>>()[0].to_string();
+                    let (defined, is_array) = self.var_contains(&ident);
+                    if !defined {
+                        return false; // 变量未定义
+                    }
+                    if !is_array {
+                        return false; // 对非数组使用下标
+                    }
+                    // 这里应该检查数组访问后的类型，暂时简化处理
+                    true
+                } else {
+                    // 简单变量访问
+                    let (var_defined, is_array) = self.var_contains(&pair_str);
+                    let func_defined = self.func_contains(&pair_str);
+                    
+                    // 如果是函数名，不能用于运算
+                    if func_defined {
+                        return false;
+                    }
+                    
+                    var_defined && !is_array // 必须是已定义的非数组变量
+                }
+            }
+            Rule::CallExp => {
+                // 函数调用，这里需要检查函数是否存在且返回int
+                let inner_pairs: Vec<_> = pair.into_inner().collect();
+                if let Some(ident_pair) = inner_pairs.first() {
+                    if ident_pair.as_rule() == Rule::Ident {
+                        let func_name = ident_pair.as_str();
+                        return self.func_contains(func_name);
+                    }
+                }
+                false
+            }
+            _ => {
+                // 递归检查内部
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if !self.check_operand_is_int_type(inner_pair) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// 检查函数调用参数是否为数组类型
+    fn check_is_arr(&mut self, pair: Pair<Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::LVal => {
+                let pair_str = pair.as_str();
+                if pair_str.ends_with("]") {
+                    // 数组元素访问，需要计算剩余维度
+                    let ident = pair_str.split("[").collect::<Vec<&str>>()[0].to_string();
+                    let (defined, is_array) = self.var_contains(&ident);
+                    if !defined || !is_array {
+                        return false;
+                    }
+                    
+                    // 计算访问的维度数
+                    let access_dims = pair_str.chars().filter(|&c| c == '[').count();
+                    
+                    // 获取变量的总维度数
+                    let var = self.variable_dels.iter().find(|e| eq_option_string(&e.name, &Some(ident.clone())));
+                    if let Some(v) = var {
+                        let total_dims = v.array_dims.len();
+                        return access_dims < total_dims; // 如果访问维度小于总维度，则结果仍是数组
+                    }
+                    false
+                } else {
+                    // 简单变量访问
+                    let (defined, is_array) = self.var_contains(&pair_str);
+                    defined && is_array
+                }
+            }
+            _ => {
+                // 其他表达式类型，递归检查
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if self.check_is_arr(inner_pair) {
+                        return true;
+                    }
+                }
+                false
             }
         }
     }
@@ -740,35 +913,38 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
             }
             Rule::FuncRParams => {
-                // 1、校验参数个数是否一致
-                // 2、校验参数类型是否匹配
-                let value = pair.as_str();
-                let sources = value.split(',').collect::<Vec<_>>();
-                let source_types = sources.iter().map(|s|{
-                    return if s.contains("[") | s.contains("]") {
-                        "1"
-                    } else {
-                        "0"
-                    }
-                }).collect::<Vec<_>>().join("");
                 let line_no = pair.line_col().0;
-                // 获取函数的参数类型
-                let func_ = self.func_dels.iter().find(|e| e.name == self.call_func);
-                if let Some(func) = func_ {
-                    let params = func.params.clone();
-                    let result = params
-                        .iter()
-                        .map(|p| {
-                            return if p.is_array_type() {
-                                "1"
-                            } else {
-                                "0"
+                let pair_str = pair.as_str().to_string();
+                
+                if let Some(func_name) = &self.call_func {
+                    // 收集实际参数
+                    let actual_params: Vec<_> = pair.into_inner().collect();
+                    
+                    // 获取函数定义 (克隆函数名避免借用冲突)
+                    let func_name_clone = func_name.clone();
+                    let expected_params = self.func_dels.iter()
+                        .find(|e| eq_option_string(&e.name, &Some(func_name_clone.clone())))
+                        .map(|f| f.params.clone());
+                        
+                    if let Some(expected_params) = expected_params {
+                        // 检查参数数量
+                        if actual_params.len() != expected_params.len() {
+                            self.add_check_result(line_no, ErrorKind::Inappropriate, Some(pair_str));
+                            return;
+                        }
+                        
+                        // 检查参数类型匹配
+                        for (i, actual_param) in actual_params.iter().enumerate() {
+                            if let Some(expected_param) = expected_params.get(i) {
+                                let actual_is_array = self.check_is_arr(actual_param.clone());
+                                let expected_is_array = expected_param.is_array_type();
+                                
+                                if actual_is_array != expected_is_array {
+                                    self.add_check_result(line_no, ErrorKind::Inappropriate, Some(pair_str));
+                                    return;
+                                }
                             }
-                        })
-                        .collect::<Vec<_>>().join("");
-                    if source_types.len() != result.len() || source_types != result  //参数个数不一致 || 参数类型不一致 都输出参数不适用
-                    {
-                        self.add_check_result(line_no,ErrorKind::Inappropriate,Some(value.to_string()));
+                        }
                     }
                 }
             }
@@ -777,13 +953,34 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     fn check_val_redefine(&mut self, ident: &str, line_no: usize) {
-        let (defined,_) = self.var_contains(&ident);
+        let (var_defined, _) = self.var_contains(&ident);
         let func_defined = self.func_contains(&ident);
-        if defined || func_defined {
-            let defined_belongs = self.variable_dels.iter().find(|e|eq_option_string(&e.name,&Some(ident.to_string()))).unwrap().belongs_to;
-            if self.block_no == defined_belongs {
-                // 同一个作用域内多次定义才能被认定为重复定义
-                self.add_check_result(line_no,ErrorKind::RedefineVal,Some(ident.to_string()));
+        
+        // 检查是否与函数重名
+        if func_defined {
+            self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
+            return;
+        }
+        
+        // 检查是否在同一作用域内重复定义变量
+        if var_defined {
+            // 查找同名变量在当前作用域的定义
+            let same_scope_var = self.variable_dels.iter().find(|e| {
+                eq_option_string(&e.name, &Some(ident.to_string())) && e.belongs_to == self.block_no
+            });
+            
+            if same_scope_var.is_some() {
+                self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
+            }
+        }
+        
+        // 检查函数参数重复定义
+        if let Some((_, Some(params))) = self.get_current_context() {
+            let param_count = params.iter()
+                .filter(|p| eq_option_string(&p.name, &Some(ident.to_string())))
+                .count();
+            if param_count > 0 {
+                self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
             }
         }
     }
@@ -1032,7 +1229,7 @@ impl CheckError {
                 CheckError::NotArrayAssign(kind, "Not an array", error_tip)
             }
             ErrorKind::UnlegalFuncCall => {
-                CheckError::UnlegalFuncCall(kind, "Illegal function call", error_tip)
+                CheckError::UnlegalFuncCall(kind, "Not a function", error_tip)
             }
             ErrorKind::UnexpectedFuncAssign => {
                 CheckError::UnexpectedFuncAssign(kind, "The left-hand side of an assignment must be a variable.", error_tip)
