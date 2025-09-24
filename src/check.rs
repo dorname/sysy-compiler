@@ -284,14 +284,7 @@ impl<'a, W: Write> Checker<'a, W> {
                 // 不考虑数组的赋值语句校验
                 if !pair_str.contains("[") &&  !defined  {
                     // 变量未定义错误
-                    let check_result = PairCheckResult::new(
-                        line_no.to_string(),
-                        Some(CheckError::new(
-                            ErrorKind::UndefinedVal,
-                            Some(ident.to_string()),
-                        )),
-                    );
-                    self.check_results.push(check_result);
+                    self.add_check_result(line_no,ErrorKind::UndefinedVal,Some(ident.clone()));
                 }
                 if self.has_call(expr_rule.clone(),false) {
                     for expr_pair in expr_rule.clone().into_inner() {
@@ -305,8 +298,8 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
                 // e_v1 true => array
                 // e_v2 false => int
-                let (e_v1,e_defined) = self.check_expr(expr_rule.clone(),1);
-                let (e_v2,_) = self.check_expr(expr_rule.clone(),0);  //是否完全由int变量组成
+                let (e_v1,e_defined,f_defined) = self.check_expr(expr_rule.clone(),1);
+                let (e_v2,_,_) = self.check_expr(expr_rule.clone(),0);  //是否完全由int变量组成
                 if !e_defined {
                     // 变量未定义错误
                     self.add_check_result(line_no,ErrorKind::UndefinedVal,Some(expr_rule.as_str().to_string()));
@@ -374,8 +367,8 @@ impl<'a, W: Write> Checker<'a, W> {
                             return;
                         }
                     }
-                    // 左侧是整形 右侧也是整形但是增加了[ ] 变成了数组
-                    if !v && !e_v2 {
+                    // 左侧是整形 右侧也是整形或者函数但是增加了[ ] 变成了数组
+                    if !v && (!e_v2 || f_defined ) {
                         let exp_ident = expr_rule.as_str().to_string();
                         if exp_ident.as_str().ends_with("]") {
                             self.add_check_result(line_no,ErrorKind::NotArrayAssign,Some(expr_rule.as_str().to_string()));
@@ -610,13 +603,13 @@ impl<'a, W: Write> Checker<'a, W> {
     /// 如果 x.0 为false => 表达式全部都是int类型
     /// 如果 x.0 为true  => 表达式至少存在一个数组类型变量
     /// x.1 无作用
-    fn check_expr(&mut self,p:Pair<Rule>,check_op:u8)->(bool,bool) {
+    fn check_expr(&mut self,p:Pair<Rule>,check_op:u8)->(bool,bool,bool) {
         match p.as_rule() {
             Rule::Ident => {
                 let p = p.as_str().to_string();
                 let (defined, v) = self.var_contains(&p);
                 let f_defined = self.func_contains(&p);
-                (v,defined||f_defined)
+                (v,defined,f_defined)
             }
             _ => {
                 let inner_pairs = p.into_inner();
@@ -625,17 +618,17 @@ impl<'a, W: Write> Checker<'a, W> {
                     results.push(self.check_expr(inner_pair,check_op));
                 }
                 let mut is_arr = if check_op == 1 {
-                    (true, true)
+                    (true, true, true)
                 }else {
-                    (false, false)
+                    (false, false, false)
                 };
                 if check_op == 1 {
-                    is_arr = results.iter().copied().fold(is_arr, |(v, d), (v1, d1)| {
-                        (v && v1, d && d1)
+                    is_arr = results.iter().copied().fold(is_arr, |(v, d,f), (v1, d1,f1)| {
+                        (v && v1, d && d1, f && f1)
                     });
                 }else {
-                    is_arr = results.iter().copied().fold(is_arr, |(v, d), (v1, d1)| {
-                        (v || v1, d && d1)
+                    is_arr = results.iter().copied().fold(is_arr, |(v, d, f), (v1, d1,f1)| {
+                        (v || v1, d && d1,f && f1)
                     });
                 }
                 is_arr
@@ -702,17 +695,18 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             Rule::LVal => {
                 let line_no = pair.line_col().0;
+                let pair_str = pair.as_str();
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
                     if inner_pair.as_rule() == Rule::Ident {
                         let name = inner_pair.as_str().to_string();
-                        let (v_defined,_) = self.var_contains(&name);
-                        if !v_defined {
-                            let check_result = PairCheckResult::new(
-                                line_no.to_string(),
-                                Some(CheckError::new(ErrorKind::UndefinedVal, Some(name.clone()))),
-                            );
-                            self.check_results.push(check_result);
+                        let (v_defined,v) = self.var_contains(&name);
+                        let f_defined= self.func_contains(&name);
+                        if !v_defined && !f_defined {
+                            self.add_check_result(line_no, ErrorKind::UndefinedVal,Some(name.clone()));
+                        }
+                        if (f_defined || !v) && pair_str.ends_with("]") {
+                            self.add_check_result(line_no, ErrorKind::NotArrayAssign,Some(name));
                         }
                     }
                 }
