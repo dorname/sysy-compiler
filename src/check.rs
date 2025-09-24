@@ -500,9 +500,10 @@ impl<'a, W: Write> Checker<'a, W> {
     /// 递归统计expr有多少个ident
     fn expr_ident_count(&mut self, pair:Pair<Rule>, collect:&mut Vec<String>) {
         match pair.as_rule() {
-            Rule::Ident => {
-                collect.push(pair.as_str().to_string());
-            },
+            Rule::Ident |
+            Rule::Plus |
+            Rule::Minus |
+            Rule::Not |
             Rule::Number => {
                 collect.push(pair.as_str().to_string());
             }
