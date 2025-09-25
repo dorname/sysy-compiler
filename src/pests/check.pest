@@ -84,12 +84,17 @@ VarDef      = { Ident ~ ArrayDims? ~ ( Assign ~ InitVal )? }
 InitVal     = { Exp | OpenBrace ~ ( InitVal ~ ( Comma ~ InitVal )* )? ~ CloseBrace }
 
 // ---------- 函数 ----------
-FuncDef     = { FuncType ~ Ident ~ OpenParen ~ FuncFParams? ~ CloseParen ~ Block }
+FuncDef     = { FuncType ~ FuncName ~ OpenParen ~ FuncFParams? ~ CloseParen ~ Block }
+
+FuncName = { Ident }
+
 FuncType    = { Void | Int }
 
 FuncFParams = { FuncFParam ~ ( Comma ~ FuncFParam )* }
 // 形参为数组时：第一维省略长度，其余维度需给出常量表达式
-FuncFParam  = { BType ~ Ident ~ ( NonIntArr ~ IntArr* )? }
+FuncFParam  = { BType ~ FuncFParamName ~ ( NonIntArr ~ IntArr* )? }
+
+FuncFParamName = { Ident }
 
 // 无形状数组入参
 NonIntArr = { OpenBracket ~ CloseBracket }
@@ -114,6 +119,8 @@ Stmt        = {
 
 AssignStmt = { LVal ~ Assign ~ Exp ~ Semicolon  }
 
+AssignStmtRightExp = @{ Exp }
+
 ReturnStmt = { Return ~ Exp? ~ Semicolon }
 
 
@@ -121,20 +128,27 @@ ReturnStmt = { Return ~ Exp? ~ Semicolon }
 Exp         = { AddExp }                         // SysY 的表达式是 int
 Cond        = { LOrExp }
 
-LVal        = { Ident ~ (Array)* }
+LVal        = { LVarName ~ (Array)* }
 
-Array = { OpenBracket ~ Exp ~ CloseBracket }
+LVarName    = { Ident }
+
+Array       = { OpenBracket ~ Exp ~ CloseBracket }
 
 PrimaryExp  = { OpenParen ~ Exp ~ CloseParen | LVal | Number }
+
 Number      = { IntConst }
 
 UnaryOp     = { Plus | Minus | Not }
-CallExp     = { Ident ~ OpenParen ~ FuncRParams? ~ CloseParen }      // 实参可选
+
+CallExp     = { CallName ~ OpenParen ~ FuncRParams? ~ CloseParen }      // 实参可选
+
+CallName    = { Ident }
+
 FuncRParams = { Exp ~ ( Comma ~ Exp )* }                  // 至少 1 个
 
 UnaryExp    = { CallExp | PrimaryExp | UnaryOpExp }
 
-UnaryOpExp = { UnaryOp ~ UnaryExp }
+UnaryOpExp  = { UnaryOp ~ UnaryExp }
 
 MulExp      = { UnaryExp ~ ( ( Mul | Div | Mod ) ~ UnaryExp )* }
 AddExp      = { MulExp   ~ ( ( Plus | Minus )     ~ MulExp   )* }
@@ -154,8 +168,8 @@ HexConst    = @{ ("0x" | "0X") ~ ASCII_HEX_DIGIT+ }
 OctConst    = @{ "0" ~ ASCII_OCT_DIGIT* }       // "0" 也是八进制零
 DecConst    = @{ '1'..'9' ~ ASCII_DIGIT* }
 
-LINE_COMMENT= _{ "//" ~ (!NEWLINE ~ ANY)* }     // 不吃换行，由 WHITESPACE 吃
-BLOCK_COMMENT=_{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+LINE_COMMENT  = _{ "//" ~ (!NEWLINE ~ ANY)* }     // 不吃换行，由 WHITESPACE 吃
+BLOCK_COMMENT =_{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 WHITESPACE    = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
 
 // ---------- 关键字（保留字） ----------

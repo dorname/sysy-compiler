@@ -30,8 +30,8 @@ pub struct Checker<'a, W: Write> {
     output: String,
     variable_dels: Vec<VariableDel>,
     func_dels: Vec<FuncDef>,
-    context_stack: Vec<(String, Option<Vec<FuncParam>>)>, // 作用域级别
-    // 作用域
+    context_stack: Vec<Option<FuncDef>>, // 作用域级别
+    // 当前作用域，越小可见性越高
     block_no: usize,
     check_results: Vec<PairCheckResult<'a>>,
     // 当前函数调用
@@ -41,7 +41,7 @@ pub struct Checker<'a, W: Write> {
 impl<'a, W: Write> Checker<'a, W> {
     pub fn new(input: &'a str, writer: &'a mut W) -> Self {
         let mut context_stack = Vec::new();
-        context_stack.push(("global".to_string(), None));
+        context_stack.push(None);
         Checker {
             input,
             writer,
@@ -96,53 +96,37 @@ impl<'a, W: Write> Checker<'a, W> {
                 let inner_pairs = pair.into_inner();
                 let mut func_def = FuncDef::new(line_no);
                 let mut should_skip = false;
-                
                 for inner_pair in inner_pairs {
-                    // 收集函数信息
-                    // 1、收集函数类型
-                    // 2、收集函数名称
-                    // 2.1、校验函数是否重复定义
-                    //      |——>是，生成错误信息，跳出整个函数的识别循环
-                    //      |——>否，继续扫描
-                    // 3、收集参数
-                    // 3.1、校验参数是否重复定义
-                    //      |——>是，生成错误信息
-                    //      |——>否，继续扫描
-                    // 4、函数加入当前上下文的栈，方便后续扫描的语句处理
-                    // 5、处理函数块中的所有语句
-                    // 6、最后
-
-                    //
-                    // 如果函数重复定义，跳过整个函数
                     if should_skip {
                         continue;
                     }
-
-                    // 检查函数名是否重复定义
-                    if inner_pair.as_rule() == Rule::Ident {
+                    // 收集函数信息
+                    let pair_str = inner_pair.as_str().to_string();
+                    // 1、收集函数类型
+                    if inner_pair.as_rule() == Rule::FuncType {
+                        func_def.return_type = Some(pair_str);
+                    }
+                    // 2、收集函数名称
+                    if inner_pair.as_rule() == Rule::FuncName {
                         let name = inner_pair.as_str().to_string();
-                        if self.func_contains(&name) {
-                            // 函数重复定义，报错并标记跳过
-                            let check_result = PairCheckResult::new(
-                                inner_pair.line_col().0.to_string(),
-                                Some(CheckError::new(ErrorKind::RedefineFunc, Some(name.clone()))),
-                            );
-                            self.check_results.push(check_result);
-                            should_skip = true;
+                        //3 重复定义判断
+                        let is_redefine = self.check_redefine(&name, line_no,1);
+                        should_skip |= is_redefine;
+                        if is_redefine {
                             continue;
                         }
                         func_def.name = Some(name.clone());
-                        self.context_stack.push((name, None));
+                        // 4、函数加入当前上下文的栈，方便后续扫描的语句处理
+                        self.context_stack.push(Some(func_def.clone()));
                     } else {
+                        // 5、处理函数块中的所有语句
                         self.walk_func_def(inner_pair, &mut func_def);
                     }
                 }
-                
-                // 只有在没有错误的情况下才添加函数定义
+                // 只有在没有重复定义的情况下才添加函数定义
                 if !should_skip {
                     self.func_dels.push(func_def);
                 }
-                
                 // 清理作用域状态
                 if self.block_no > 0 {
                     self.block_no -= 1; // 离开函数作用域
@@ -150,17 +134,138 @@ impl<'a, W: Write> Checker<'a, W> {
                 if self.context_stack.len() > 1 {
                     self.context_stack.pop(); // 函数出栈
                 }
-                self.call_func = None; // 清除函数调用记录
             }
             Rule::ConstDecl | Rule::VarDecl => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
                     match inner_pair.as_rule() {
-                        Rule::ConstDef => {
+                        Rule::ConstDef => self.handle_const_var_def(inner_pair, true),
+                        Rule::VarDef => self.handle_const_var_def(inner_pair, false),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
+
+    fn walk_func_def(&mut self, pair: Pair<Rule>, func_def: &mut FuncDef) {
+        match pair.as_rule() {
+            Rule::Block |
+            Rule::BlockItem |
+            Rule::Stmt |
+            Rule::FuncFParams => {
+                if pair.as_rule() == Rule::Block {
+                    self.block_no += 1; // 进入一个新的函数作用域
+                }
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.walk_func_def(inner_pair, func_def)
+                }
+            }
+            Rule::FuncFParam => {
+                let line_no = pair.line_col().0;
+                let str_pair = pair.as_str().to_string();
+                let inner_pairs = pair.into_inner();
+                let mut param = FuncParam::new();
+                for inner_pair in inner_pairs {
+                    match inner_pair.as_rule() {
+                        Rule::BType => {
+                            param.var_type = Some(inner_pair.as_str().to_string());
                         }
-                        Rule::VarDef => {
+                        Rule::FuncFParamName => {
+                            param.name = Some(inner_pair.as_str().to_string());
+                        }
+                        Rule::NonIntArr => {
+                            param.array_dims.push("-1".to_string());
+                        }
+                        Rule::IntArr => {
+                            param.array_dims.push(inner_pair.as_str().to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                // 校验参数名是否重复定义。注意此时函数的声明还未加入到全局符号表中
+                // 通过context_stack获取当前函数作用域的参数集合
+                if let Some(func) = self.context_stack.pop().unwrap(){
+                    if func.contains(&param.name.clone().unwrap()) {
+                        self.add_check_result(line_no, ErrorKind::RedefineVal,Some(str_pair));
+                    }else {
+                        // 往函数中添加参数
+                        func_def.params.push(param);
+                        // 将添加完参数的函数重新添加到栈中
+                        self.context_stack.push(Some(func_def.clone()));
+                    }
+                }
+            }
+            Rule::ReturnStmt => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.walk_return_stmt(inner_pair, func_def);
+                }
+            }
+            _ => {}
+        }
+    }
 
+    /// # 解析表达式，
+    ///
+    /// 表达式中可能存在：数组、函数调用、变量访问。
+    ///
+    /// 需要有以下校验：
+    /// - 判断访问的数组元素是否越界
+    /// - 函数返回值是否其他类型一致
+    /// - 变量/数组当作函数访问
+    /// - 函数/变量当作数组访问
+    /// - 函数当作变量访问
+    /// - 函数调用参数个数是否一致
+    /// 如果存在数组类型，需要返回表达式的整体维度
+    fn check_expr(&mut self, pair: Pair<Rule>){
+        match pair.as_rule() {
+            Rule::Exp |
+            Rule::Stmt => {
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    self.check_expr(inner_pair);
+                }
+            }
+            Rule::AssignStmt => {
+                // 赋值语句
+                let inner_pairs = pair.into_inner();
+                for inner_pair in inner_pairs {
+                    if inner_pair
+                    self.check_expr(inner_pair)
+                }
+            }
+            Rule::LVal => {
+                // 访问变量
+                let line_no = pair.line_col().0;
+                let inner_pairs = pair.into_inner();
+                let mut var_type = -2;
+                for inner_pair in inner_pairs {
+                    match inner_pair.as_rule() {
+                        Rule::LVarName => {
+                            // 注意这里无法校验 变量和数组当前函数使用以及函数参数使用等错误
+                            // 校验变量/函数当作数组使用错误
+                            // 校验数组的访问越界
+                            // 拿到变量/数组名称
+                            // 判断是否定义
+                            let name = inner_pair.as_str().to_string();
+                            // 获取实际类型
+                            var_type = self.get_ident_type(&name,line_no,0);
+                        }
+                        Rule::Array => {
+                            match var_type {
+                                0 | 2 => {
+                                    //
+                                    self.add_check_result(line_no, ErrorKind::NotArrayAssign,Some(inner_pair.as_str().to_string()));
+                                }
+                                1 => {
+                                    // 维度计算
+                                }
+                                _ => {}
+                            }
                         }
                         _ => {}
                     }
@@ -170,17 +275,38 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
-    fn walk_func_def(&mut self, pair: Pair<Rule>, func_def: &mut FuncDef) {
-        match pair.as_rule() {
-            Rule::FuncType => {
-                func_def.return_type = Some(pair.as_str().to_string()); //收集返回类型
-            }
 
-            Rule::ReturnStmt => {
+    fn check_expr_exits_array(&self,pair: Pair< Rule>) -> bool {
+        match pair.as_rule() {
+            Rule::Array => true,
+            _ => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
-                    self.walk_return_stmt(inner_pair, func_def);
+                    if self.check_expr_exits_array(inner_pair) {
+                        return true;
+                    }
                 }
+                false
+            }
+        }
+    }
+
+    fn handle_const_var_def(&mut self, pair: Pair<Rule>, is_const: bool){
+        let mut val = VariableDel::new(pair.line_col().0);
+        val.is_const = is_const;
+        val.var_type = Some("int".to_string());
+        // 记录当前的可见度
+        val.belongs_to = self.block_no.clone();
+        self.walk_val_def(pair, &mut val);
+        if !val.is_error {
+            self.variable_dels.push(val);
+        }
+    }
+
+    fn walk_val_def(&mut self, pair: Pair<Rule>, val: &mut VariableDel) {
+        match pair.as_rule() {
+            Rule::Ident => {
+
             }
             _ => {}
         }
@@ -265,16 +391,88 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
+    /// 获取ident的类型
+    /// -1 -> 未定义
+    /// 0 -> 变量
+    /// 1 -> 数组
+    /// 2 -> 函数
+    fn get_ident_type(&mut self, ident: &str,line_no: usize,op:usize) -> i8 {
+        let (v_defined,v) =self.var_contains(ident);
+        let f_defined = self.func_contains(ident);
+        let kind = if op == 0 {
+            ErrorKind::UndefinedVal
+        } else {
+            ErrorKind::UndefinedFunc
+        };
+        if v_defined && v {
+            return  1;
+        }
+        if v_defined && !v {
+            return 0;
+        }
+        if f_defined {
+            return 2;
+        }
+        if let Some(func) = self.get_current_context(){
+            let param = func.get_param(ident);
+            if let Some(p) = param {
+                if p.is_array_type() {
+                    return 1;
+                }else {
+                    return 0;
+                }
+            }
+        }
+        self.add_check_result(line_no, kind ,Some(ident.to_string()));
+        -1
+    }
 
 
-    fn check_val_redefine(&mut self, ident: &str, line_no: usize) {
+
+
+
+    /// 检查标识符是否被重复定义。
+    ///
+    /// 该方法会在以下几种情况中进行重定义检测:
+    ///
+    /// 1. **与已有函数重名**
+    ///    如果传入的标识符名称已存在于函数定义中，则记录为函数或变量重定义错误。
+    ///
+    /// 2. **在同一作用域内重复定义变量**
+    ///    检查 `self.variable_dels` 中是否已经存在同名且属于当前 `block_no` 的变量，
+    ///    若存在则判定为重定义。
+    ///
+    /// 3. **函数参数重复定义**
+    ///    若当前上下文存在参数列表，则检查是否已有同名参数，若存在则判定为重定义。
+    ///
+    /// # 参数
+    /// - `ident`: 待检查的标识符名称。
+    /// - `line_no`: 出现重定义的源码行号，用于错误提示。
+    /// - `op`: 指示错误种类的操作码:
+    ///   - `0`: 变量重定义（[`ErrorKind::RedefineVal`]）。
+    ///   - `1`: 函数重定义（[`ErrorKind::RedefineFunc`]）。
+    ///
+    /// # 示例
+    /// ```ignore
+    /// checker.check_redefine("x", 10, 0); // 检查变量 x 是否在第10行重定义
+    /// checker.check_redefine("foo", 15, 1); // 检查函数 foo 是否在第15行重定义
+    /// ```
+    ///
+    /// # 注意
+    /// - 函数会根据检测结果调用 [`add_check_result`] 记录错误信息。
+    /// - 这个函数只适合用于对函数、变量使用，对于函数参数不适用
+    fn check_redefine(&mut self, ident: &str, line_no: usize,op:usize) -> bool {
         let (var_defined, _) = self.var_contains(&ident);
         let func_defined = self.func_contains(&ident);
-        
+        let kind= if op==0 {
+            ErrorKind::RedefineVal
+        } else {
+            ErrorKind::RedefineFunc
+        };
         // 检查是否与函数重名
         if func_defined {
-            self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
-            return;
+            self.add_check_result(line_no, kind, Some(ident.to_string()));
+            return true;
         }
         
         // 检查是否在同一作用域内重复定义变量
@@ -285,19 +483,19 @@ impl<'a, W: Write> Checker<'a, W> {
             });
             
             if same_scope_var.is_some() {
-                self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
+                self.add_check_result(line_no,kind, Some(ident.to_string()));
+                return true;
             }
         }
         
         // 检查函数参数重复定义
-        if let Some((_, Some(params))) = self.get_current_context() {
-            let param_count = params.iter()
-                .filter(|p| eq_option_string(&p.name, &Some(ident.to_string())))
-                .count();
-            if param_count > 0 {
-                self.add_check_result(line_no, ErrorKind::RedefineVal, Some(ident.to_string()));
+        if let Some(func) = self.get_current_context() && op == 0 {
+            if func.contains(ident) {
+                self.add_check_result(line_no,kind, Some(ident.to_string()));
+                return true;
             }
         }
+        false
     }
 
     fn func_contains(&self,ident: &str) -> bool {
@@ -306,8 +504,8 @@ impl<'a, W: Write> Checker<'a, W> {
 
     fn var_contains(&self, ident: &str) -> (bool, bool) {
         // 先校验函数入参
-        if let Some((_, Some(params))) = self.get_current_context() {
-            let result = params
+        if let Some(func) = self.get_current_context() {
+            let result = func.params
                 .iter()
                 .filter(|p| eq_option_string(&p.name, &Some(ident.to_string())))
                 .map(|p| (true, p.is_array_type()))
@@ -346,8 +544,8 @@ impl<'a, W: Write> Checker<'a, W> {
             (false, false)
         }
     }
-    fn get_current_context(&self) -> Option<&(String, Option<Vec<FuncParam>>)> {
-        self.context_stack.last()
+    fn get_current_context(&self) -> &Option<FuncDef> {
+        self.context_stack.last().unwrap()
     }
 
     fn add_check_result(&mut self, line_no: usize, error_kind: ErrorKind,tip: Option<String>){
@@ -377,6 +575,18 @@ impl FuncDef {
             params: Vec::new(),
             line_no,
             error_kind: None,
+        }
+    }
+
+    fn get_param(&self,ident: &str) -> Option<&FuncParam> {
+        self.params.iter().find(|p| eq_option_string(&p.name, &Some(ident.to_string())))
+    }
+
+    fn contains(&self, ident: &str) -> bool {
+        if self.params.is_empty() {
+            false
+        } else {
+            self.params.iter().any(|p| eq_option_string(&p.name, &Some(ident.to_string())))
         }
     }
 }
