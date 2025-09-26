@@ -1,9 +1,10 @@
-int a() {
+int a(int x, int y[][1]) {
     return 1;
 }
 
 int main() {
-    int b = a[1];
+    int b[1] = {0};
+    a(1, b);
     return 1;
 }
 

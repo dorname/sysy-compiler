@@ -1,8 +1,11 @@
+use crate::check;
 use crate::utils::add_option_string;
 use crate::utils::eq_option_string;
+use clap::builder::Str;
 use pest::Parser;
 use pest::iterators::Pair;
 use pest::iterators::Pairs;
+use pest::pratt_parser::Op;
 use pest_derive::Parser;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -10,8 +13,6 @@ use std::io;
 use std::io::Write;
 use std::ops::Add;
 use std::process::id;
-use clap::builder::Str;
-use pest::pratt_parser::Op;
 
 #[derive(Parser)]
 #[grammar = "pests/check.pest"]
@@ -62,7 +63,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            // dbg!(&pairs);
+            dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
@@ -74,7 +75,7 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             if self.check_results.is_empty() {
                 writeln!(self.writer, "{}", "No semantic errors in the program!")?;
-            }else {
+            } else {
                 write!(self.writer, "{}", self.output)?;
             }
         } else {
@@ -110,7 +111,7 @@ impl<'a, W: Write> Checker<'a, W> {
                     if inner_pair.as_rule() == Rule::FuncName {
                         let name = inner_pair.as_str().to_string();
                         //3 重复定义判断
-                        let is_redefine = self.check_redefine(&name, line_no,1);
+                        let is_redefine = self.check_redefine(&name, line_no, 1);
                         should_skip |= is_redefine;
                         if is_redefine {
                             continue;
@@ -149,13 +150,9 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
-
     fn walk_func_def(&mut self, pair: Pair<Rule>, func_def: &mut FuncDef) {
         match pair.as_rule() {
-            Rule::Block |
-            Rule::BlockItem |
-            Rule::Stmt |
-            Rule::FuncFParams => {
+            Rule::Block | Rule::BlockItem | Rule::Stmt | Rule::FuncFParams => {
                 if pair.as_rule() == Rule::Block {
                     self.block_no += 1; // 进入一个新的函数作用域
                 }
@@ -188,10 +185,10 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
                 // 校验参数名是否重复定义。注意此时函数的声明还未加入到全局符号表中
                 // 通过context_stack获取当前函数作用域的参数集合
-                if let Some(func) = self.context_stack.pop().unwrap(){
+                if let Some(func) = self.context_stack.pop().unwrap() {
                     if func.contains(&param.name.clone().unwrap()) {
-                        self.add_check_result(line_no, ErrorKind::RedefineVal,Some(str_pair));
-                    }else {
+                        self.add_check_result(line_no, ErrorKind::RedefineVal, Some(str_pair));
+                    } else {
                         // 往函数中添加参数
                         func_def.params.push(param);
                         // 将添加完参数的函数重新添加到栈中
@@ -199,11 +196,20 @@ impl<'a, W: Write> Checker<'a, W> {
                     }
                 }
             }
+            Rule::AssignStmt => {
+                self.check_expr(pair);
+            }
+            Rule::Decl => {
+                self.check(pair);
+            }
             Rule::ReturnStmt => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
                     self.walk_return_stmt(inner_pair, func_def);
                 }
+            }
+            Rule::Exp => {
+                self.check_expr(pair);
             }
             _ => {}
         }
@@ -221,77 +227,287 @@ impl<'a, W: Write> Checker<'a, W> {
     /// - 函数当作变量访问
     /// - 函数调用参数个数是否一致
     /// 如果存在数组类型，需要返回表达式的整体维度
-    fn check_expr(&mut self, pair: Pair<Rule>){
+    fn check_expr(&mut self, pair: Pair<Rule>) {
         match pair.as_rule() {
-            Rule::Exp |
-            Rule::Stmt => {
+            Rule::AssignStmt => {
+                let str_pair = pair.as_str().to_string();
+                let line_no = pair.line_col().0;
+                let inner_pairs = pair.into_inner();
+                let mut l_var: Option<(i8, usize)> = None;
+                let mut r_expr: Option<usize> = None;
+                for inner_pair in inner_pairs {
+                    match inner_pair.as_rule() {
+                        Rule::LVal => {
+                            let str_pair = inner_pair.as_str().to_string();
+                            l_var = check_l_var(self, inner_pair);
+                            if l_var.is_some() {
+                                let (var_type, _) = l_var.unwrap();
+                                if var_type == 2 {
+                                    // 函数调用
+                                    self.add_check_result(
+                                        line_no,
+                                        ErrorKind::UnexpectedFuncAssign,
+                                        Some(str_pair),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        Rule::Exp => {
+                            let str_pair = inner_pair.as_str().to_string();
+                            // 先扁平化
+                            let mut ps = Vec::new();
+                            flat_exp(self, inner_pair, &mut ps);
+                            r_expr = get_type_dims(self, line_no, &mut ps, Some(str_pair));
+                        }
+                        _ => {}
+                    }
+                }
+                if l_var.is_some() && r_expr.is_some() {
+                    let (_, l_var_dims) = l_var.unwrap();
+                    let r_expr_dims = r_expr.unwrap();
+                    if l_var_dims != r_expr_dims {
+                        self.add_check_result(line_no, ErrorKind::TypeMismatch, Some(str_pair));
+                    }
+                }
+            }
+            Rule::CallExp => {
+                let _ = check_call_exp(self, pair);
+            }
+            Rule::LVal => {
+                let _ = check_l_var(self, pair);
+            }
+            _ => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
                     self.check_expr(inner_pair);
                 }
             }
-            Rule::AssignStmt => {
-                // 赋值语句
-                let inner_pairs = pair.into_inner();
-                for inner_pair in inner_pairs {
-                    if inner_pair
-                    self.check_expr(inner_pair)
+        }
+
+        fn get_type_dims<'a, W: Write>(
+            checker: &mut Checker<W>,
+            line_no: usize,
+            pairs: &mut Vec<Pair<'a, Rule>>,
+            tips: Option<String>,
+        ) -> Option<usize> {
+            let results = pairs
+                .iter()
+                .map(|pair| match pair.as_rule() {
+                    Rule::LVal => check_l_var(checker, pair.clone()),
+                    Rule::CallExp => check_call_exp(checker, pair.clone()),
+                    _ => Some((0, 1)),
+                })
+                .collect::<Vec<Option<(i8, usize)>>>();
+
+            // 1) 若有 None，直接返回 None（表示上游已报错或无法判定）
+            if results.iter().any(|r| r.is_none()) {
+                return None;
+            }
+
+            // 2) 全部都是 Some，取出里面的值
+            let vals: Vec<(i8, usize)> = results.iter().map(|r| r.unwrap()).collect();
+
+            // 空集合（理论上不该发生），按需要决定返回什么；这里返回默认 (0,1)
+            if vals.is_empty() {
+                return None;
+            }
+
+            // 判断是否全部相等：用 windows(2) 检查相邻相等
+            let all_equal = vals.windows(2).all(|w| w[0].1 == w[1].1);
+
+            if all_equal {
+                Some(vals[0].1)
+            } else {
+                checker.add_check_result(line_no, ErrorKind::TypeMismatchOp, tips);
+                None
+            }
+        }
+
+        fn flat_exp<'a, W: Write>(
+            checker: &mut Checker<W>,
+            pair: Pair<'a, Rule>,
+            pairs: &mut Vec<Pair<'a, Rule>>,
+        ) {
+            match pair.as_rule() {
+                Rule::LVal | Rule::CallExp | Rule::Number => {
+                    pairs.push(pair);
+                }
+                _ => {
+                    let inner_pairs = pair.into_inner();
+                    for inner_pair in inner_pairs {
+                        flat_exp(checker, inner_pair, pairs);
+                    }
                 }
             }
-            Rule::LVal => {
-                // 访问变量
-                let line_no = pair.line_col().0;
-                let inner_pairs = pair.into_inner();
-                let mut var_type = -2;
-                for inner_pair in inner_pairs {
-                    match inner_pair.as_rule() {
-                        Rule::LVarName => {
-                            // 注意这里无法校验 变量和数组当前函数使用以及函数参数使用等错误
-                            // 校验变量/函数当作数组使用错误
-                            // 校验数组的访问越界
-                            // 拿到变量/数组名称
-                            // 判断是否定义
-                            let name = inner_pair.as_str().to_string();
-                            // 获取实际类型
-                            var_type = self.get_ident_type(&name,line_no,0);
+        }
+
+        fn check_l_var<W: Write>(
+            checker: &mut Checker<W>,
+            pair: Pair<Rule>,
+        ) -> Option<(i8, usize)> {
+            if pair.as_rule() != Rule::LVal {
+                return None;
+            }
+            // 访问变量
+            let line_no = pair.line_col().0;
+            let inner_pairs = pair.into_inner();
+            let mut var_type = -1;
+            let mut dims = usize::MAX;
+            let mut var_name = "".to_string();
+            for inner_pair in inner_pairs {
+                match inner_pair.as_rule() {
+                    Rule::LVarName => {
+                        // 注意这里无法校验 变量和数组当前函数使用以及函数参数使用等错误
+                        // 校验变量/函数当作数组使用错误
+                        // 校验数组的访问越界
+                        // 拿到变量/数组名称
+                        // 判断是否定义
+                        var_name = inner_pair.as_str().to_string();
+                        // 获取实际类型
+                        var_type = checker.get_ident_type(&var_name, line_no, 0);
+                    }
+                    Rule::Array => {
+                        match var_type {
+                            0 | 2 => {
+                                // 变量和函数被当作数组使用
+                                checker.add_check_result(
+                                    line_no,
+                                    ErrorKind::NotArrayAssign,
+                                    Some(inner_pair.as_str().to_string()),
+                                );
+                            }
+                            1 => {
+                                // 计算使用维度
+                                let pair_str = inner_pair.as_str();
+                                let use_dims = pair_str.split("[").count();
+                                // 获取数组的原始维度
+                                dims = checker.get_array_dims(&var_name) - use_dims;
+                            }
+                            _ => {}
                         }
-                        Rule::Array => {
-                            match var_type {
-                                0 | 2 => {
-                                    //
-                                    self.add_check_result(line_no, ErrorKind::NotArrayAssign,Some(inner_pair.as_str().to_string()));
+                    }
+                    _ => {}
+                }
+            }
+            if var_type < 0 {
+                return None;
+            }
+            if dims == usize::MAX && var_type != 1 {
+                dims = 0;
+            }
+            Some((var_type, dims))
+        }
+
+        fn check_call_exp<W: Write>(
+            checker: &mut Checker<W>,
+            pair: Pair<Rule>,
+        ) -> Option<(i8, usize)> {
+            if pair.as_rule() != Rule::CallExp {
+                return None;
+            }
+            let line_no = pair.line_col().0;
+            let inner_pairs = pair.into_inner();
+            let mut func_name = "".to_string();
+            let mut func_type = -1;
+            for inner_pair in inner_pairs {
+                match inner_pair.as_rule() {
+                    Rule::CallName => {
+                        func_name = inner_pair.as_str().to_string();
+                        func_type = checker.get_ident_type(&func_name, line_no, 1);
+                        if func_type == 0 || func_type == 1 {
+                            // 函数被当作变量使用
+                            checker.add_check_result(
+                                line_no,
+                                ErrorKind::UnlegalFuncCall,
+                                Some(func_name.clone()),
+                            );
+                            return None;
+                        }
+                        if func_type < 0 {
+                            return None;
+                        }
+                    }
+                    Rule::FuncRParams => {
+                        // 校验使用函数时参数个数和类型是否对应
+                        // 获取使用时的参数
+                        let mut use_params = vec![];
+                        let pair_str = inner_pair.as_str();
+                        for param in pair_str.split(",") {
+                            let param_type = if checker.is_number_str(param.trim()) {
+                                0
+                            } else {
+                                checker.get_ident_type(param, line_no, 0)
+                            };
+                            use_params.push(param_type);
+                        }
+                        if let Some(func_def) = checker.get_func_by_name(&func_name) {
+                            let params = func_def.params.clone();
+                            if params.len() != use_params.len() {
+                                // 参数个数不一致
+                                checker.add_check_result(
+                                    line_no,
+                                    ErrorKind::Inappropriate,
+                                    Some(func_name.clone()),
+                                );
+                                return None;
+                            } else {
+                                for (i, param) in params.iter().enumerate() {
+                                    if !param.eq_type(use_params[i].to_string()) {
+                                        // 参数类型不一致
+                                        checker.add_check_result(
+                                            line_no,
+                                            ErrorKind::Inappropriate,
+                                            Some(func_name.clone()),
+                                        );
+                                        return None;
+                                    } else {
+                                        // 参数维度不一致，因为这里仅支持一维数组所以只考虑一维数组的情况
+                                        if param.is_array_type() && param.array_dims.len() != 1 {
+                                            checker.add_check_result(
+                                                line_no,
+                                                ErrorKind::Inappropriate,
+                                                Some(func_name.clone()),
+                                            );
+                                            return None;
+                                        }
+                                    }
                                 }
-                                1 => {
-                                    // 维度计算
-                                }
-                                _ => {}
                             }
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
-            _ => {}
+            Some((2, 0))
         }
     }
 
-
-    fn check_expr_exits_array(&self,pair: Pair< Rule>) -> bool {
-        match pair.as_rule() {
-            Rule::Array => true,
-            _ => {
-                let inner_pairs = pair.into_inner();
-                for inner_pair in inner_pairs {
-                    if self.check_expr_exits_array(inner_pair) {
-                        return true;
-                    }
-                }
-                false
-            }
+    /// 判断字符串是否为数字
+    /// 支持:
+    /// - 十进制 (例如 "123")
+    /// - 十六进制 (以 "0x" 或 "0X" 开头，例如 "0x1A")
+    /// - 八进制 (以 "0" 开头且不是 "0x"，例如 "0777")
+    fn is_number_str(&self, s: &str) -> bool {
+        if s.starts_with("0x") || s.starts_with("0X") {
+            i32::from_str_radix(&s[2..], 16).is_ok()
+        } else if s.starts_with('0') && s.len() > 1 {
+            i32::from_str_radix(&s[1..], 8).is_ok()
+        } else {
+            s.parse::<i32>().is_ok()
         }
     }
 
-    fn handle_const_var_def(&mut self, pair: Pair<Rule>, is_const: bool){
+    fn get_array_dims(&self, name: &str) -> usize {
+        self.variable_dels
+            .iter()
+            .find(|x| x.name == Some(name.to_string()))
+            .unwrap()
+            .array_dims
+            .len()
+    }
+
+    fn handle_const_var_def(&mut self, pair: Pair<Rule>, is_const: bool) {
         let mut val = VariableDel::new(pair.line_col().0);
         val.is_const = is_const;
         val.var_type = Some("int".to_string());
@@ -304,30 +520,53 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     fn walk_val_def(&mut self, pair: Pair<Rule>, val: &mut VariableDel) {
-        match pair.as_rule() {
-            Rule::Ident => {
-
+        let inner_pairs = pair.into_inner();
+        for inner_pair in inner_pairs {
+            match inner_pair.as_rule() {
+                Rule::Ident => {
+                    let name = inner_pair.as_str();
+                    val.name = Some(name.to_string());
+                    let line_no = inner_pair.line_col().0;
+                    // 校验变量是否重复定义
+                    self.check_redefine(name, line_no, 0);
+                }
+                Rule::ArrayDims => {
+                    let inner_pairs = inner_pair.into_inner();
+                    for inner_pair in inner_pairs {
+                        if inner_pair.as_rule() == Rule::ConstExp {
+                            val.array_dims.push(inner_pair.as_str().to_string());
+                        }
+                    }
+                }
+                Rule::InitVal => {
+                    let inners = inner_pair.into_inner();
+                    for inner in inners {
+                        if inner.as_rule() == Rule::Exp {
+                            self.check_expr(inner);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
-    fn has_operator(&self,pair:Pair<Rule>) -> bool {
+    fn has_operator(&self, pair: Pair<Rule>) -> bool {
         match pair.as_rule() {
-            Rule::Plus |
-            Rule::Minus |
-            Rule::Mul |
-            Rule::Div |
-            Rule::Mod |
-            Rule::Not |
-            Rule::And |
-            Rule::Or |
-            Rule::Less |
-            Rule::Greater |
-            Rule::LessEqual |
-            Rule::GreaterEqual |
-            Rule::Equal |
-            Rule::NotEqual => true,
+            Rule::Plus
+            | Rule::Minus
+            | Rule::Mul
+            | Rule::Div
+            | Rule::Mod
+            | Rule::Not
+            | Rule::And
+            | Rule::Or
+            | Rule::Less
+            | Rule::Greater
+            | Rule::LessEqual
+            | Rule::GreaterEqual
+            | Rule::Equal
+            | Rule::NotEqual => true,
             _ => {
                 let inner_pairs = pair.into_inner();
                 let mut result = false;
@@ -339,23 +578,30 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
-
-    fn walk_return_stmt(&mut self, pair: Pair<Rule>,func_def: &mut FuncDef) {
+    fn walk_return_stmt(&mut self, pair: Pair<Rule>, func_def: &mut FuncDef) {
         match pair.as_rule() {
             Rule::Ident => {
                 let line_no = pair.line_col().0;
                 let pair_str = pair.as_str();
                 let func_type = func_def.return_type.clone();
-                let (v_defined,v) = self.var_contains(&pair_str);
+                let (v_defined, v) = self.var_contains(&pair_str);
                 let f_defined = self.func_contains(&pair_str);
                 if let Some(func_type) = func_type {
                     if f_defined || v {
-                        self.add_check_result(line_no, ErrorKind::ReturnMismatch,Some(pair_str.to_string()));
+                        self.add_check_result(
+                            line_no,
+                            ErrorKind::ReturnMismatch,
+                            Some(pair_str.to_string()),
+                        );
                         return;
                     }
                     if v_defined && !v {
                         if func_type == "void".to_string() {
-                            self.add_check_result(line_no, ErrorKind::ReturnMismatch,Some(pair_str.to_string()));
+                            self.add_check_result(
+                                line_no,
+                                ErrorKind::ReturnMismatch,
+                                Some(pair_str.to_string()),
+                            );
                         }
                     }
                 }
@@ -365,7 +611,7 @@ impl<'a, W: Write> Checker<'a, W> {
                 if pair_str.ends_with("]") {
                     let ident = pair.into_inner().next().unwrap();
                     self.walk_return_stmt(ident, func_def);
-                }else {
+                } else {
                     for inner_pair in pair.into_inner() {
                         self.walk_return_stmt(inner_pair, func_def);
                     }
@@ -377,15 +623,18 @@ impl<'a, W: Write> Checker<'a, W> {
                 let func_type = func_def.return_type.clone();
                 if let Some(func_type) = func_type {
                     if func_type == "void".to_string() {
-                        self.add_check_result(line_no, ErrorKind::ReturnMismatch,Some(pair_str.to_string()));
+                        self.add_check_result(
+                            line_no,
+                            ErrorKind::ReturnMismatch,
+                            Some(pair_str.to_string()),
+                        );
                     }
                 }
-
             }
             _ => {
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
-                    self.walk_return_stmt(inner_pair,func_def);
+                    self.walk_return_stmt(inner_pair, func_def);
                 }
             }
         }
@@ -396,8 +645,8 @@ impl<'a, W: Write> Checker<'a, W> {
     /// 0 -> 变量
     /// 1 -> 数组
     /// 2 -> 函数
-    fn get_ident_type(&mut self, ident: &str,line_no: usize,op:usize) -> i8 {
-        let (v_defined,v) =self.var_contains(ident);
+    fn get_ident_type(&mut self, ident: &str, line_no: usize, op: usize) -> i8 {
+        let (v_defined, v) = self.var_contains(ident);
         let f_defined = self.func_contains(ident);
         let kind = if op == 0 {
             ErrorKind::UndefinedVal
@@ -405,7 +654,7 @@ impl<'a, W: Write> Checker<'a, W> {
             ErrorKind::UndefinedFunc
         };
         if v_defined && v {
-            return  1;
+            return 1;
         }
         if v_defined && !v {
             return 0;
@@ -413,23 +662,24 @@ impl<'a, W: Write> Checker<'a, W> {
         if f_defined {
             return 2;
         }
-        if let Some(func) = self.get_current_context(){
+        if let Some(func) = self.get_current_context() {
+            if let Some(func_name) = func.name.clone() {
+                if func_name == ident {
+                    return 2;
+                }
+            }
             let param = func.get_param(ident);
             if let Some(p) = param {
                 if p.is_array_type() {
                     return 1;
-                }else {
+                } else {
                     return 0;
                 }
             }
         }
-        self.add_check_result(line_no, kind ,Some(ident.to_string()));
+        self.add_check_result(line_no, kind, Some(ident.to_string()));
         -1
     }
-
-
-
-
 
     /// 检查标识符是否被重复定义。
     ///
@@ -461,10 +711,10 @@ impl<'a, W: Write> Checker<'a, W> {
     /// # 注意
     /// - 函数会根据检测结果调用 [`add_check_result`] 记录错误信息。
     /// - 这个函数只适合用于对函数、变量使用，对于函数参数不适用
-    fn check_redefine(&mut self, ident: &str, line_no: usize,op:usize) -> bool {
+    fn check_redefine(&mut self, ident: &str, line_no: usize, op: usize) -> bool {
         let (var_defined, _) = self.var_contains(&ident);
         let func_defined = self.func_contains(&ident);
-        let kind= if op==0 {
+        let kind = if op == 0 {
             ErrorKind::RedefineVal
         } else {
             ErrorKind::RedefineFunc
@@ -474,38 +724,44 @@ impl<'a, W: Write> Checker<'a, W> {
             self.add_check_result(line_no, kind, Some(ident.to_string()));
             return true;
         }
-        
+
         // 检查是否在同一作用域内重复定义变量
         if var_defined {
             // 查找同名变量在当前作用域的定义
             let same_scope_var = self.variable_dels.iter().find(|e| {
                 eq_option_string(&e.name, &Some(ident.to_string())) && e.belongs_to == self.block_no
             });
-            
+
             if same_scope_var.is_some() {
-                self.add_check_result(line_no,kind, Some(ident.to_string()));
+                self.add_check_result(line_no, kind, Some(ident.to_string()));
                 return true;
             }
         }
-        
+
         // 检查函数参数重复定义
-        if let Some(func) = self.get_current_context() && op == 0 {
+        if let Some(func) = self.get_current_context()
+            && op == 0
+        {
             if func.contains(ident) {
-                self.add_check_result(line_no,kind, Some(ident.to_string()));
+                self.add_check_result(line_no, kind, Some(ident.to_string()));
                 return true;
             }
         }
         false
     }
 
-    fn func_contains(&self,ident: &str) -> bool {
-        self.func_dels.iter().find(|e| eq_option_string(&e.name,&Some(ident.to_string()))).is_some()
+    fn func_contains(&self, ident: &str) -> bool {
+        self.func_dels
+            .iter()
+            .find(|e| eq_option_string(&e.name, &Some(ident.to_string())))
+            .is_some()
     }
 
     fn var_contains(&self, ident: &str) -> (bool, bool) {
         // 先校验函数入参
         if let Some(func) = self.get_current_context() {
-            let result = func.params
+            let result = func
+                .params
                 .iter()
                 .filter(|p| eq_option_string(&p.name, &Some(ident.to_string())))
                 .map(|p| (true, p.is_array_type()))
@@ -520,7 +776,8 @@ impl<'a, W: Write> Checker<'a, W> {
             .iter()
             .filter(|v| {
                 if let Some(name) = &v.name
-                    && v.belongs_to <= self.block_no //需要标准清楚 可见性问题 【变量所属作用域级别 小于 当前作用域】即不可见
+                    && v.belongs_to <= self.block_no
+                //需要标准清楚 可见性问题 【变量所属作用域级别 小于 当前作用域】即不可见
                 {
                     // 变量已经定义
                     return name == ident;
@@ -544,15 +801,22 @@ impl<'a, W: Write> Checker<'a, W> {
             (false, false)
         }
     }
-    fn get_current_context(&self) -> &Option<FuncDef> {
-        self.context_stack.last().unwrap()
+    fn get_current_context(&self) -> Option<&FuncDef> {
+        Option::from(self.context_stack.last().unwrap())
+    }
+    
+    fn get_func_by_name(&self, name: &str) -> Option<&FuncDef> {
+        let result = self.func_dels.iter().find(|f| eq_option_string(&f.name, &Some(name.to_string())));
+        if result.is_some() {
+             result
+        }else {
+            self.get_current_context()
+        }
     }
 
-    fn add_check_result(&mut self, line_no: usize, error_kind: ErrorKind,tip: Option<String>){
-        let check_result = PairCheckResult::new(
-            line_no.to_string(),
-            Some(CheckError::new(error_kind,tip)),
-        );
+    fn add_check_result(&mut self, line_no: usize, error_kind: ErrorKind, tip: Option<String>) {
+        let check_result =
+            PairCheckResult::new(line_no.to_string(), Some(CheckError::new(error_kind, tip)));
         self.check_results.push(check_result);
     }
 }
@@ -578,15 +842,19 @@ impl FuncDef {
         }
     }
 
-    fn get_param(&self,ident: &str) -> Option<&FuncParam> {
-        self.params.iter().find(|p| eq_option_string(&p.name, &Some(ident.to_string())))
+    fn get_param(&self, ident: &str) -> Option<&FuncParam> {
+        self.params
+            .iter()
+            .find(|p| eq_option_string(&p.name, &Some(ident.to_string())))
     }
 
     fn contains(&self, ident: &str) -> bool {
         if self.params.is_empty() {
             false
         } else {
-            self.params.iter().any(|p| eq_option_string(&p.name, &Some(ident.to_string())))
+            self.params
+                .iter()
+                .any(|p| eq_option_string(&p.name, &Some(ident.to_string())))
         }
     }
 }
@@ -609,6 +877,11 @@ impl FuncParam {
 
     fn is_array_type(&self) -> bool {
         !self.array_dims.is_empty()
+    }
+
+    fn eq_type(&self, other_type: String) -> bool {
+        (self.is_array_type() && other_type.eq("1")) ||
+           (!self.is_array_type()&& other_type.eq("0"))
     }
 }
 
@@ -740,25 +1013,31 @@ impl CheckError {
             ErrorKind::RedefineFunc => {
                 CheckError::RedefineFunc(kind, "Redefined function", error_tip)
             }
-            ErrorKind::TypeMismatch => CheckError::TypeMismatch(kind, "Type mismatched for assignment", error_tip),
+            ErrorKind::TypeMismatch => {
+                CheckError::TypeMismatch(kind, "Type mismatched for assignment", error_tip)
+            }
             ErrorKind::TypeMismatchOp => {
                 CheckError::TypeMismatchOp(kind, "Type mismatched for op", error_tip)
             }
             ErrorKind::ReturnMismatch => {
                 CheckError::ReturnMismatch(kind, "Type mismatched for return", error_tip)
             }
-            ErrorKind::Inappropriate => {
-                CheckError::Inappropriate(kind, "Function is not applicable for arguments", error_tip)
-            }
+            ErrorKind::Inappropriate => CheckError::Inappropriate(
+                kind,
+                "Function is not applicable for arguments",
+                error_tip,
+            ),
             ErrorKind::NotArrayAssign => {
                 CheckError::NotArrayAssign(kind, "Not an array", error_tip)
             }
             ErrorKind::UnlegalFuncCall => {
                 CheckError::UnlegalFuncCall(kind, "Not a function", error_tip)
             }
-            ErrorKind::UnexpectedFuncAssign => {
-                CheckError::UnexpectedFuncAssign(kind, "The left-hand side of an assignment must be a variable.", error_tip)
-            }
+            ErrorKind::UnexpectedFuncAssign => CheckError::UnexpectedFuncAssign(
+                kind,
+                "The left-hand side of an assignment must be a variable.",
+                error_tip,
+            ),
             _ => CheckError::Other(kind, "Other error", error_tip),
         }
     }
@@ -914,7 +1193,6 @@ mod tests {
         checker.syn_check().unwrap();
     }
 
-
     #[test]
     fn test_lab3_normaltest04() {
         let filename = FILE_PATH.to_string() + "normaltest04.sy";
@@ -923,7 +1201,6 @@ mod tests {
         let mut checker = Checker::new(&file, &mut binding);
         checker.syn_check().unwrap();
     }
-
 
     #[test]
     fn test_lab3_normaltest05() {
@@ -950,5 +1227,11 @@ mod tests {
         let mut binding = stdout();
         let mut checker = Checker::new(&file, &mut binding);
         checker.syn_check().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_number() {
+        assert_eq!("0x10".parse::<i32>().is_ok(), true)
     }
 }
