@@ -63,7 +63,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let pairs = pairs.into_inner().next().unwrap();
             // 把编译单元的内容拿出来
             let pairs = pairs.into_inner();
-            dbg!(&pairs);
+            // dbg!(&pairs);
             for pair in pairs {
                 self.check(pair);
             }
@@ -208,7 +208,7 @@ impl<'a, W: Write> Checker<'a, W> {
                     self.walk_return_stmt(inner_pair, func_def);
                 }
             }
-            Rule::Exp => {
+            Rule::Exp | Rule::Cond => {
                 self.check_expr(pair);
             }
             _ => {}
@@ -258,7 +258,7 @@ impl<'a, W: Write> Checker<'a, W> {
                             // 先扁平化
                             let mut ps = Vec::new();
                             flat_exp(self, inner_pair, &mut ps);
-                            r_expr = get_type_dims(self, line_no, &mut ps, Some(str_pair));
+                            r_expr = get_type_dims(self, line_no, &mut ps, Some(str_pair),true);
                         }
                         _ => {}
                     }
@@ -278,9 +278,41 @@ impl<'a, W: Write> Checker<'a, W> {
                 let _ = check_l_var(self, pair);
             }
             _ => {
+                if self.has_operator(pair.clone()) {
+                    let line_no = pair.line_col().0;
+                    let str_pair = pair.as_str().to_string();
+                    let mut ps = Vec::new();
+                    flat_exp(self, pair, &mut ps);
+                    get_type_dims(self, line_no, &mut ps, Some(str_pair),false);
+                    return;
+                }
                 let inner_pairs = pair.into_inner();
                 for inner_pair in inner_pairs {
                     self.check_expr(inner_pair);
+                }
+            }
+        }
+
+        fn check_unary_op_exp<W: Write>(
+            checker: &mut Checker<W>,
+            pair: Pair<Rule>,
+        ){
+            let line_no = pair.line_col().0;
+            let pair_str = pair.as_str().to_string();
+            if pair.as_rule() != Rule::UnaryOpExp {
+                return;
+            }
+            let mut ident = "";
+            for inner_pair in pair.into_inner() {
+                if inner_pair.as_rule() == Rule::UnaryExp {
+                    ident = inner_pair.as_str();
+                    break;
+                }
+            }
+            if !ident.is_empty() {
+               let re =  checker.get_ident_type(ident,line_no,0);
+                if re != 0 {
+                    checker.add_check_result(line_no, ErrorKind::TypeMismatchOp, Some(pair_str));
                 }
             }
         }
@@ -290,15 +322,38 @@ impl<'a, W: Write> Checker<'a, W> {
             line_no: usize,
             pairs: &mut Vec<Pair<'a, Rule>>,
             tips: Option<String>,
+            is_assign: bool,
         ) -> Option<usize> {
-            let results = pairs
-                .iter()
-                .map(|pair| match pair.as_rule() {
-                    Rule::LVal => check_l_var(checker, pair.clone()),
-                    Rule::CallExp => check_call_exp(checker, pair.clone()),
-                    _ => Some((0, 1)),
-                })
-                .collect::<Vec<Option<(i8, usize)>>>();
+            let mut results = Vec::<Option<(i8,usize)>>::new();
+            let pairs_len = pairs.len();
+            for pair in pairs {
+                match pair.as_rule() {
+                    Rule::LVal => {
+                        let pair_str = pair.as_str().to_string();
+                       let res =  check_l_var(checker, pair.clone());
+                        if res.is_some() && res.unwrap().0 == 2 && !is_assign{
+                            // 说明函数没有正确被使用
+                            checker.add_check_result(line_no,ErrorKind::TypeMismatchOp,tips.clone());
+                             break;
+                        }
+                        if res.is_some() && res.unwrap().0 == 1 && !pair_str.contains('[') && !is_assign {
+                            checker.add_check_result(line_no,ErrorKind::TypeMismatchOp,tips.clone());
+                            break;
+                        }
+                        results.push(res);
+                    }
+                    Rule::CallExp => {
+                        results.push(check_call_exp(checker, pair.clone()));
+                    }
+                    _ => {
+                        results.push(Some((0,0)));
+                    }
+                }
+            }
+
+            if results.len() < pairs_len {
+                return None;
+            }
 
             // 1) 若有 None，直接返回 None（表示上游已报错或无法判定）
             if results.iter().any(|r| r.is_none()) {
@@ -333,6 +388,9 @@ impl<'a, W: Write> Checker<'a, W> {
                 Rule::LVal | Rule::CallExp | Rule::Number => {
                     pairs.push(pair);
                 }
+                Rule::UnaryOpExp => {
+                    check_unary_op_exp(checker, pair);
+                }
                 _ => {
                     let inner_pairs = pair.into_inner();
                     for inner_pair in inner_pairs {
@@ -366,6 +424,9 @@ impl<'a, W: Write> Checker<'a, W> {
                         var_name = inner_pair.as_str().to_string();
                         // 获取实际类型
                         var_type = checker.get_ident_type(&var_name, line_no, 0);
+                        if var_type == 1 {
+                            dims = checker.get_array_dims(&var_name);
+                        }
                     }
                     Rule::Array => {
                         match var_type {
@@ -378,11 +439,8 @@ impl<'a, W: Write> Checker<'a, W> {
                                 );
                             }
                             1 => {
-                                // 计算使用维度
-                                let pair_str = inner_pair.as_str();
-                                let use_dims = pair_str.split("[").count();
                                 // 获取数组的原始维度
-                                dims = checker.get_array_dims(&var_name) - use_dims;
+                                dims -=1 ;
                             }
                             _ => {}
                         }
@@ -437,7 +495,25 @@ impl<'a, W: Write> Checker<'a, W> {
                             let param_type = if checker.is_number_str(param.trim()) {
                                 0
                             } else {
-                                checker.get_ident_type(param, line_no, 0)
+                                // TODO 要处理 入参是 表达式的情况 如 r - 1
+                                let mut param_name  = param.trim().to_string();
+                                let mut idents = Vec::new();
+                                fn get_ident(p:Pair<Rule>,idents:&mut Vec<String>) {
+                                   match p.as_rule() {
+                                       Rule::Ident => idents.push(p.as_str().to_string()),
+                                       _ => {
+                                           let inners = p.into_inner();
+                                           for inner in inners {
+                                               get_ident(inner,idents);
+                                           }
+                                       }
+                                   }
+                                }
+                              get_ident(inner_pair.clone(),&mut idents);
+                                if !idents.is_empty() {
+                                    param_name = idents[0].clone();
+                                }
+                                checker.get_ident_type(&param_name, line_no, 0)
                             };
                             use_params.push(param_type);
                         }
@@ -499,12 +575,14 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     fn get_array_dims(&self, name: &str) -> usize {
+        let result =
         self.variable_dels
             .iter()
             .find(|x| x.name == Some(name.to_string()))
             .unwrap()
             .array_dims
-            .len()
+            .len();
+        result
     }
 
     fn handle_const_var_def(&mut self, pair: Pair<Rule>, is_const: bool) {
