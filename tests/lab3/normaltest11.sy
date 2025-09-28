@@ -1,0 +1,23 @@
+// Error type 11: The left-hand side of an assignment must be a variable
+
+int func_return_int() {
+    return 42;
+}
+
+int another_func() {
+    return 10;
+}
+
+int global_var = 10;
+
+int main() {
+    int local_var = 5;
+    
+    // Error: assigning to function name
+    func_return_int = 10;
+    
+    // Error: assigning to another function name  
+    another_func = 20;
+    
+    return 0;
+}

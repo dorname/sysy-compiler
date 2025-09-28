@@ -1,0 +1,2 @@
+Error type 11 at Line 17: The left-hand side of an assignment must be a variable.:func_return_int
+Error type 11 at Line 20: The left-hand side of an assignment must be a variable.:another_func
