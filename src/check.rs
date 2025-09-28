@@ -428,8 +428,8 @@ impl<'a, W: Write> Checker<'a, W> {
                         if var_type == 1 {
                             dims = checker.get_array_dims(&var_name);
                         }
-                        if var_type == 0 || 
-                            var_type == 2 || 
+                        if (var_type == 0 || 
+                            var_type == 2) &&
                             pair_str.contains('[') {
                             // 变量和函数被当作数组使用
                             checker.add_check_result(
