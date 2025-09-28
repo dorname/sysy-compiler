@@ -428,7 +428,7 @@ impl<'a, W: Write> Checker<'a, W> {
                         if var_type == 1 {
                             dims = checker.get_array_dims(&var_name);
                         }
-                        if (var_type == 0 || 
+                        if (var_type == 0 ||
                             var_type == 2) &&
                             pair_str.contains('[') {
                             // 变量和函数被当作数组使用
@@ -471,6 +471,8 @@ impl<'a, W: Write> Checker<'a, W> {
             let inner_pairs = pair.into_inner();
             let mut func_name = "".to_string();
             let mut func_type = -1;
+            let mut use_params = vec![];
+            let mut func_params = vec![];
             for inner_pair in inner_pairs {
                 match inner_pair.as_rule() {
                     Rule::CallName => {
@@ -488,17 +490,21 @@ impl<'a, W: Write> Checker<'a, W> {
                         if func_type < 0 {
                             return None;
                         }
+                        if func_type == 2 {
+                            if let Some(func_def) = checker.get_func_by_name(&func_name) {
+                                // 获取函数的参数
+                                func_params = func_def.params.clone();
+                            }
+                        }
                     }
                     Rule::FuncRParams => {
                         // 校验使用函数时参数个数和类型是否对应
                         // 获取使用时的参数
-                        let mut use_params = vec![];
                         let pair_str = inner_pair.as_str();
                         for param in pair_str.split(",") {
                             let param_type = if checker.is_number_str(param.trim()) {
                                 0
                             } else {
-                                // TODO 要处理 入参是 表达式的情况 如 r - 1
                                 let mut param_name  = param.trim().to_string();
                                 let mut idents = Vec::new();
                                 fn get_ident(p:Pair<Rule>,idents:&mut Vec<String>) {
@@ -520,42 +526,39 @@ impl<'a, W: Write> Checker<'a, W> {
                             };
                             use_params.push(param_type);
                         }
-                        if let Some(func_def) = checker.get_func_by_name(&func_name) {
-                            let params = func_def.params.clone();
-                            if params.len() != use_params.len() {
-                                // 参数个数不一致
-                                checker.add_check_result(
-                                    line_no,
-                                    ErrorKind::Inappropriate,
-                                    Some(func_name.clone()),
-                                );
-                                return None;
-                            } else {
-                                for (i, param) in params.iter().enumerate() {
-                                    if !param.eq_type(use_params[i].to_string()) {
-                                        // 参数类型不一致
-                                        checker.add_check_result(
-                                            line_no,
-                                            ErrorKind::Inappropriate,
-                                            Some(func_name.clone()),
-                                        );
-                                        return None;
-                                    } else {
-                                        // 参数维度不一致，因为这里仅支持一维数组所以只考虑一维数组的情况
-                                        if param.is_array_type() && param.array_dims.len() != 1 {
-                                            checker.add_check_result(
-                                                line_no,
-                                                ErrorKind::Inappropriate,
-                                                Some(func_name.clone()),
-                                            );
-                                            return None;
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
                     _ => {}
+                }
+            }
+            if func_params.len() != use_params.len() {
+                // 参数个数不一致
+                checker.add_check_result(
+                    line_no,
+                    ErrorKind::Inappropriate,
+                    Some(func_name.clone()),
+                );
+                return None;
+            } else {
+                for (i, param) in func_params.iter().enumerate() {
+                    if !param.eq_type(use_params[i].to_string()) {
+                        // 参数类型不一致
+                        checker.add_check_result(
+                            line_no,
+                            ErrorKind::Inappropriate,
+                            Some(func_name.clone()),
+                        );
+                        return None;
+                    } else {
+                        // 参数维度不一致，因为这里仅支持一维数组所以只考虑一维数组的情况
+                        if param.is_array_type() && param.array_dims.len() != 1 {
+                            checker.add_check_result(
+                                line_no,
+                                ErrorKind::Inappropriate,
+                                Some(func_name.clone()),
+                            );
+                            return None;
+                        }
+                    }
                 }
             }
             Some((2, 0))
