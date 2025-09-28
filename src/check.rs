@@ -408,6 +408,7 @@ impl<'a, W: Write> Checker<'a, W> {
                 return None;
             }
             // 访问变量
+            let pair_str = pair.as_str().to_string();
             let line_no = pair.line_col().0;
             let inner_pairs = pair.into_inner();
             let mut var_type = -1;
@@ -427,17 +428,19 @@ impl<'a, W: Write> Checker<'a, W> {
                         if var_type == 1 {
                             dims = checker.get_array_dims(&var_name);
                         }
+                        if var_type == 0 || 
+                            var_type == 2 || 
+                            pair_str.contains('[') {
+                            // 变量和函数被当作数组使用
+                            checker.add_check_result(
+                                line_no,
+                                ErrorKind::NotArrayAssign,
+                                Some(inner_pair.as_str().to_string()),
+                            );
+                        }
                     }
                     Rule::Array => {
                         match var_type {
-                            0 | 2 => {
-                                // 变量和函数被当作数组使用
-                                checker.add_check_result(
-                                    line_no,
-                                    ErrorKind::NotArrayAssign,
-                                    Some(inner_pair.as_str().to_string()),
-                                );
-                            }
                             1 => {
                                 // 获取数组的原始维度
                                 dims -=1 ;
