@@ -112,7 +112,13 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 语义检查常量声明
     pub fn analyze_const_decl(&mut self, const_decl: Pair<'_, Rule>) {
-
+        let mut decl_iter = Self::skip_in(const_decl);
+        let mut const_defs = Vec::<Pair<'_, Rule>>::new();
+        while let Some(const_def) = decl_iter.next(){
+            if const_def.as_rule() == Rule::ConstDef {
+                const_defs.push(const_def);
+            }
+        }
     }
 
     /// 语义检查常量定义
