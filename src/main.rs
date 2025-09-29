@@ -29,5 +29,5 @@ fn main() {
 
     let mut binding = stderr();
     let mut checker = Checker::new(&input, &mut binding);
-    checker.syn_check().unwrap();
+    let _ = checker.syn_check();
 }
