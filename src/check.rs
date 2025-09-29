@@ -16,7 +16,6 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{self, Write};
-
 #[derive(Parser)]
 #[grammar = "pests/check.pest"]
 pub struct CParser;
@@ -76,14 +75,12 @@ impl<'a, W: Write> Checker<'a, W> {
             let compilation_unit = file_pair.into_inner().next().unwrap();
             // 获取所有的声明
             let declarations = compilation_unit.into_inner();
-
-            dbg!(declarations.clone());
             // 依次解析声明
             for declaration in declarations {
                 // todo 声明解析
-                // self.analyze_declaration(declaration);
+                self.analyze_declaration(declaration);
             }
-
+            dbg!(self.scope_stack.get_current_scope());
             // todo 生成报错信息，并输出
             // self.generate_error_output()?;
         } else {
@@ -109,7 +106,7 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
     /// 获取目标的规则的迭代器
-    fn skip_in<'b>(&mut self, pair: Pair<'b, Rule>) -> impl Iterator<Item = Pair<'b, Rule>>  {
+    fn skip_in(pair: Pair<Rule>) -> impl Iterator<Item=Pair<Rule>> {
         pair.into_inner().into_iter()
     }
 
@@ -126,27 +123,60 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 语义检查变量声明
     pub fn analyze_var_decl(&mut self, var_decl: Pair<'_, Rule>) {
-        let mut decl_iter = self.skip_in(var_decl);
+        let mut decl_iter = Self::skip_in(var_decl);
         let mut var_defs = Vec::<Pair<'_, Rule>>::new();
         while let Some(var_def) = decl_iter.next(){
             if var_def.as_rule() == Rule::VarDef {
                 var_defs.push(var_def);
             }
         }
+        for var_def in var_defs  {
+            self.analyze_var_def(var_def);
+        }
     }
 
     /// 语义检查变量定义
     pub fn analyze_var_def(&mut self, var_def: Pair<'_, Rule>) {
-        let mut def_iter = self.skip_in(var_def);
+        let mut def_iter = Self::skip_in(var_def);
         let ident = def_iter.next().unwrap();
         let next_pair = def_iter.next();
-        let mut scope = self.scope_stack.get_current_scope_mut();
-        if next_pair.is_some() && next_pair.unwrap().as_rule()==Rule::ArrayDims {
-            //todo 数组类型的变量
+        if let Some(scope) = self.scope_stack.get_current_scope_mut(){
+            let ident_name = ident.as_str().to_string();
+            if next_pair.is_some() {
+                let array_dims = next_pair.unwrap();
+                if array_dims.as_rule()==Rule::ArrayDims {
+                    let mut dims = Vec::<usize>::new();
+                    let mut array_str = ArrayStruct::new(Type::Int);
+                    Self::analyze_array_dims(array_dims,&mut dims);
+                    for dim in dims {
+                        array_str.insert_dim(dim);
+                    }
+                    scope.symbol_table.insert(ident_name, Type::Array(array_str));
+                }else {
+                    scope.symbol_table.insert(ident_name, Type::Int);
+                }
+            }else {
+                scope.symbol_table.insert(ident_name, Type::Int);
+            }
         }
     }
 
+    pub fn analyze_array_dims(array_dims: Pair<'_, Rule>, dims: &mut Vec<usize>) {
+        let inner_pairs = array_dims.into_inner();
+        for inner_pair in inner_pairs {
+            match inner_pair.as_rule() {
+                Rule::ConstExp => {
+                    let dim_size = Self::analyze_const_exp(inner_pair);
+                    dims.push(dim_size);
+                },
+                _ => {}
+            }
+        }
+    }
 
+    pub fn analyze_const_exp(const_exp: Pair<'_, Rule>)->usize {
+        const_exp.as_str().trim().parse::<usize>().unwrap()
+    }
 }
 
 
@@ -203,20 +233,22 @@ impl ScopeStack {
     
     /// 获取可变的当前作用域的符号表
     pub fn get_current_scope_mut(&mut self) -> Option<&mut Scope> {
-        let last_key = self.stack.last().unwrap();
-        self.get_scope_mut(last_key)
+        let last_key = self.stack.last().cloned()?; // 克隆键，避免借用冲突
+        self.get_scope_mut(&last_key)
     }
 }
 
 /// 设定一个初始化的作用域栈
 impl Default for ScopeStack {
     fn default() -> Self {
-        let mut stack = Vec::<ScopeKey>::new();
-        stack.push(ScopeKey::Global);
-        Self {
+
+        let stack = Vec::<ScopeKey>::new();
+        let mut scope_stack = Self {
             stack,
             scopes: Default::default(),
-        }
+        };
+        scope_stack.push(ScopeKey::Global);
+        scope_stack
     }
 }
 
@@ -235,6 +267,11 @@ impl Default for Scope {
     }
 }
 
+impl Scope {
+    fn insert(&mut self, key: String, value: Type){
+        self.symbol_table.insert(key, value);
+    }
+}
 
 /// 枚举类型
 #[derive(Debug,Clone)]
@@ -242,7 +279,7 @@ pub enum Type {
     Int,
     Func(Func),
     Void,
-    Array(Array)
+    Array(ArrayStruct)
 }
 
 /// 函数类型表示
@@ -257,13 +294,43 @@ pub struct Func {
 /// 数组结果表示
 /// 维度和类型
 #[derive(Debug,Clone)]
-pub struct Array {
+pub struct ArrayStruct {
     // 数组元素类型
     pub item_type: Box<Type>,
-    // 数组维度和长度
-    pub dim_size: usize,
+    // 维度标识数组
+    pub dim_nos: Vec<usize>,
     // 每个维度的存储空间
     pub tpl_size: HashMap<usize, usize>,
+    // 数组维度
+    pub array_dims: usize,
+    // 维度流水号
+    pub crr_no: usize,
+}
+
+impl ArrayStruct {
+    fn new(item_type: Type)->Self {
+        Self {
+            item_type: Box::new(item_type),
+            dim_nos: Vec::new(),
+            tpl_size: Default::default(),
+            array_dims: 0,
+            crr_no: 0,
+        }
+    }
+    fn insert_dim(&mut self,dim_size: usize)  {
+        self.dim_nos.push(self.crr_no);
+        self.tpl_size.insert(self.crr_no, dim_size);
+        self.array_dims += 1;
+        self.crr_no += 1;
+    }
+
+    fn get_dim_size(&self) -> usize {
+        self.array_dims
+    }
+
+    fn get_item_type(&self) -> &Type {
+        &self.item_type
+    }
 }
 
 /// 表示在分析过程中发现的语义错误
@@ -701,31 +768,10 @@ mod tests {
     #[test]
     #[ignore]
     fn test_skip() {
-
-        fn skip_in(pair: Pair<Rule>) -> impl Iterator<Item = Pair<Rule>>  {
-            pair.into_inner().into_iter()
-        }
         let filename = FILE_PATH.to_string() + "test.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
-        if let Some(mut pairs) = parse_file(file.as_str()) {
-            // 处理文件头
-            let file_pair = pairs.next().unwrap();
-            // 读取编译单元
-            let compilation_unit = file_pair.into_inner().next().unwrap();
-            // 获取所有的声明
-            let declarations = compilation_unit.into_inner();
-
-            // 依次解析声明
-            for declaration in declarations {
-                if declaration.as_rule() == Rule::Decl {
-                    let var = declaration.into_inner().next().unwrap();
-                    if var.as_rule() == Rule::VarDecl {
-                       let mut var_decl = skip_in(var).skip(1);
-                       let var_def = var_decl.next();
-                        println!("{}", var_def.unwrap().as_str());
-                    }
-                }
-            }
-        }
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
     }
 }
