@@ -1,10 +1,10 @@
-Error type 6 at Line 12: Type mismatched for op:i + array
-Error type 6 at Line 18: Type mismatched for op:0 || array
-Error type 6 at Line 19: Type mismatched for op:array/i
-Error type 6 at Line 21: Type mismatched for op:f != array
-Error type 6 at Line 24: Type mismatched for op:array <= i
-Error type 6 at Line 26: Type mismatched for op:array-array
-Error type 6 at Line 31: Type mismatched for op:!array
-Error type 6 at Line 36: Type mismatched for op:func1 + func2
-Error type 6 at Line 37: Type mismatched for op:func1 + array
-Error type 6 at Line 38: Type mismatched for op:func1 - 0
+Error type 6 at Line 12: Type mismatched for op -> i + array
+Error type 6 at Line 18: Type mismatched for op -> 0 || array
+Error type 6 at Line 19: Type mismatched for op -> array/i
+Error type 6 at Line 21: Type mismatched for op -> f != array
+Error type 6 at Line 24: Type mismatched for op -> array <= i
+Error type 6 at Line 26: Type mismatched for op -> array-array
+Error type 6 at Line 31: Type mismatched for op -> !array
+Error type 6 at Line 36: Type mismatched for op -> func1 + func2
+Error type 6 at Line 37: Type mismatched for op -> func1 + array
+Error type 6 at Line 38: Type mismatched for op -> func1 - 0

@@ -1,4 +1,4 @@
-Error type 5 at Line 19: Type mismatched for assignment:i1 = a1;
-Error type 5 at Line 20: Type mismatched for assignment:a1[1] = i3;
-Error type 5 at Line 22: Type mismatched for assignment:a2[2][2] = a3;
-Error type 5 at Line 24: Type mismatched for assignment:a1[3][3] = i1;
+Error type 5 at Line 19: Type mismatched for assignment -> i1 = a1;
+Error type 5 at Line 20: Type mismatched for assignment -> a1[1] = i3;
+Error type 5 at Line 22: Type mismatched for assignment -> a2[2][2] = a3;
+Error type 5 at Line 24: Type mismatched for assignment -> a1[3][3] = i1;

@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{self, Write};
+use std::thread::scope;
+
 #[derive(Parser)]
 #[grammar = "pests/check.pest"]
 pub struct CParser;
@@ -78,6 +80,7 @@ impl<'a, W: Write> Checker<'a, W> {
             let compilation_unit = file_pair.into_inner().next().unwrap();
             // 获取所有的声明
             let declarations = compilation_unit.into_inner();
+            // dbg!(&declarations);
             // 依次解析声明
             for declaration in declarations {
                 // 声明解析
@@ -96,12 +99,13 @@ impl<'a, W: Write> Checker<'a, W> {
         for error in self.errors.iter_mut() {
             error.build_str();
             self.output += &error.output;
+            self.output += "\n";
         }
-        writeln!(self.writer, "{}", self.output)?;
+        write!(self.writer, "{}", self.output)?;
         Ok(())
     }
 
-    pub fn analyze_declaration(&mut self, declaration: Pair<'_, Rule>) {
+    pub fn analyze_declaration(&mut self, declaration: Pair<'a, Rule>) {
         match declaration.as_rule() {
             Rule::Decl => {
                 let decls = declaration.into_inner();
@@ -124,7 +128,7 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     /// 语义检查变量声明
-    pub fn analyze_var_decl(&mut self, var_decl: Pair<'_, Rule>) {
+    pub fn analyze_var_decl(&mut self, var_decl: Pair<'a, Rule>) {
         let mut decl_iter = Self::skip_in(var_decl);
         let mut var_defs = Vec::<Pair<'_, Rule>>::new();
         while let Some(var_def) = decl_iter.next() {
@@ -137,9 +141,9 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
     /// 函数定义解析
-    fn analyze_func_def(&mut self, func_def: Pair<'_, Rule>) {
+    fn analyze_func_def(&mut self, func_def: Pair<'a, Rule>) {
         let mut func_def_iter = Self::skip_in(func_def);
-        let func_type = func_def_iter.next().unwrap();
+        let func_type = Self::skip_in(func_def_iter.next().unwrap()).next().unwrap();
         let func_name = func_def_iter.next().unwrap();
         let ident_name = func_name.as_str().to_string();
         let line_no = Self::get_line_no(func_name);
@@ -150,8 +154,12 @@ impl<'a, W: Write> Checker<'a, W> {
         }
 
         // 将函数类型加入到最近活跃作用域的符号表中
-        let func_ty = if func_type.as_rule() == Rule::Int { Type::Int } else { Type::Void };
-        let  function = Func::new(Vec::new(),func_ty);
+        let func_ty = if func_type.as_rule() == Rule::Int {
+            Type::Int
+        } else {
+            Type::Void
+        };
+        let function = Func::new(Vec::new(), func_ty);
         let scope = self.scope_stack.get_current_scope_mut().unwrap();
         scope.insert(ident_name.clone(), Type::Func(function));
 
@@ -170,7 +178,8 @@ impl<'a, W: Write> Checker<'a, W> {
         }
         // 开始解析函数体
         let mut block_items = Vec::<Pair<'_, Rule>>::new();
-        while let Some(ref item) = func_body {
+        let mut block_item_iter = Self::skip_in(func_body.unwrap());
+        while let Some(ref item) = block_item_iter.next() {
             if item.as_rule() == Rule::BlockItem {
                 block_items.push(item.clone());
             }
@@ -184,7 +193,7 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     /// 语义检查块中的每一项
-    fn analyze_block_item(&mut self, block_item: Pair<'_, Rule>) {
+    fn analyze_block_item(&mut self, block_item: Pair<'a, Rule>) {
         match block_item.as_rule() {
             Rule::Decl => {
                 self.analyze_declaration(block_item);
@@ -192,11 +201,17 @@ impl<'a, W: Write> Checker<'a, W> {
             Rule::Stmt => {
                 self.analyze_stmt(block_item);
             }
+            Rule::BlockItem => {
+                let inner_items = Self::skip_in(block_item);
+                for item in inner_items {
+                    self.analyze_block_item(item);
+                }
+            }
             _ => {}
         }
     }
 
-    pub fn analyze_stmt(&mut self, stmt: Pair<'_, Rule>) {
+    pub fn analyze_stmt(&mut self, stmt: Pair<'a, Rule>) {
         let stmt_iter = Self::skip_in(stmt);
         for p in stmt_iter {
             match p.as_rule() {
@@ -211,6 +226,10 @@ impl<'a, W: Write> Checker<'a, W> {
                 }
                 Rule::ReturnStmt => {
                     self.analyze_return_stmt(p);
+                }
+                Rule::ExpStmt => {
+                    let exp = Self::skip_in(p).next().unwrap();
+                    self.analyze_exp(exp);
                 }
                 Rule::Block => {
                     // 更新作用域
@@ -236,7 +255,7 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 处理赋值语句
     fn analyze_assign_stmt(&mut self, pair: Pair<'_, Rule>) {
-        let line_no = Self::get_line_no( pair.clone());
+        let line_no = Self::get_line_no(pair.clone());
         let stmt_str = pair.as_str();
         let mut assign = Self::skip_in(pair);
         let l_val = assign.next().unwrap();
@@ -247,27 +266,41 @@ impl<'a, W: Write> Checker<'a, W> {
         if l_type.is_none() || r_type.is_none() {
             return;
         }
-        if let (Some(l_type), Some(r_type)) = (l_type, r_type) {
-           if l_type.is_array() && r_type.is_array() {
+        if let (Some(l), Some(r)) = (l_type, r_type) {
+            if l.is_array() && r.is_array() {
                 // 判断维度是否一致
-                if let (Type::Array(l), Type::Array(r)) = (l_type, r_type) {
-                    if l.get_dim_size() != r.get_dim_size() {
+                if let (Type::Array(ll), Type::Array(rr)) = (l, r) {
+                    if ll.get_dim_size() != rr.get_dim_size() {
                         // 维度不一致
-                        self.collect_error(ErrorKind::TypeMismatch,line_no,stmt_str);
+                        self.collect_error(ErrorKind::TypeMismatch, line_no, stmt_str);
                     }
                 }
-               return;
-           }
-            if l_type.is_func() {
-               // 对非变量和数组元素赋值
-               self.collect_error(ErrorKind::UnexpectedFuncAssign,line_no,stmt_str);
                 return;
-           }
-            if r_type.is_func() {
-               // 将函数赋值给数组或变量
-               self.collect_error(ErrorKind::TypeMismatch,line_no,stmt_str);
+            }
+            if l.is_func() {
+                // 对非变量和数组元素赋值
+                self.collect_error(ErrorKind::UnexpectedFuncAssign, line_no, stmt_str);
                 return;
-           }
+            }
+            if r.is_func() {
+                // 将函数赋值给数组或变量
+                self.collect_error(ErrorKind::TypeMismatch, line_no, stmt_str);
+                return;
+            }
+            if l.is_int() && !r.is_int() {
+                self.collect_error(ErrorKind::TypeMismatch, line_no, stmt_str);
+                return;
+            }
+            if l.is_array() && r.is_int() {
+                if let Type::Array(t) = l {
+                    if t.get_dim_size() != 0 {
+                        // 数组维度不一致
+                        self.collect_error(ErrorKind::TypeMismatch, line_no, stmt_str);
+                        return;
+                    }
+                }
+                return;
+            }
         }
     }
 
@@ -283,6 +316,8 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 解析add_exp
     fn analyze_add_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let line_no = Self::get_line_no(pair.clone());
+        let add_str = pair.as_str();
         let mut add_exp = Self::skip_in(pair);
         let l_mul_exp = add_exp.next()?;
         let next = add_exp.next();
@@ -293,11 +328,13 @@ impl<'a, W: Write> Checker<'a, W> {
             let l_type = self.analyze_mul_exp(l_mul_exp)?;
             let r_type = self.analyze_mul_exp(r_mul_exp)?;
             // 当返回为数组或者函数时，表达式使用时存在使用错误
-            if l_type.is_array()  || l_type.is_func()  {
-                Some(l_type)
-            }else if  r_type.is_func() || r_type.is_array() {
-                return Some(r_type);
-            }else if l_type.is_int() && r_type.is_int() {
+            if l_type.is_array() || l_type.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, add_str);
+                None
+            } else if r_type.is_func() || r_type.is_array() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, add_str);
+                return None;
+            } else if l_type.is_int() && r_type.is_int() {
                 return Some(Type::Int);
             } else {
                 return None;
@@ -307,6 +344,8 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 解析mul_exp
     fn analyze_mul_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let line_no = Self::get_line_no(pair.clone());
+        let mul_str = pair.as_str();
         let mut mul_exp = Self::skip_in(pair);
         let l_unary_exp = mul_exp.next().unwrap();
         let next = mul_exp.next();
@@ -317,11 +356,13 @@ impl<'a, W: Write> Checker<'a, W> {
             let l_type = self.analyze_unary_exp(l_unary_exp)?;
             let r_type = self.analyze_unary_exp(r_unary_exp)?;
             // 当返回为数组或者函数时，表达式使用时存在使用错误
-            if l_type.is_array()  || l_type.is_func()  {
-                 Some(l_type)
-            }else if  r_type.is_func() || r_type.is_array() {
-                return Some(r_type);
-            }else if l_type.is_int() && r_type.is_int() {
+            if l_type.is_array() || l_type.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, mul_str);
+                None
+            } else if r_type.is_func() || r_type.is_array() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, mul_str);
+                return None;
+            } else if l_type.is_int() && r_type.is_int() {
                 return Some(Type::Int);
             } else {
                 return None;
@@ -350,11 +391,18 @@ impl<'a, W: Write> Checker<'a, W> {
     }
 
     fn analyze_unary_op_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
-        let mut unary_op_exp = Self::skip_in( pair).skip(1);
+        let line_no = Self::get_line_no(pair.clone());
+        let unary_str = pair.as_str();
+        let mut unary_op_exp = Self::skip_in(pair).skip(1);
         let unary_exp = unary_op_exp.next()?;
-        self.analyze_unary_exp(unary_exp)
+        let unary_type =self.analyze_unary_exp(unary_exp)?;
+        if unary_type.is_int() {
+            return Some(Type::Int);
+        }else {
+            self.collect_error(ErrorKind::TypeMismatchOp, line_no, unary_str);
+        }
+        None
     }
-
 
     fn analyze_call_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
         let line_no = Self::get_line_no(pair.clone());
@@ -383,50 +431,61 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             // 开始校验参数个数是否一致
             let function = self.scope_stack.get(func_name)?;
-            if let Type::Func(func)  = function {
+            if let Type::Func(func) = function {
                 if params_vec.len() != func.params.len() {
                     // 参数个数不一致 需要添加类型8错误
-                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                    self.collect_error(ErrorKind::Inappropriate, line_no, func_name);
                     return None;
-                }else {
-                    let func_params= func.params.clone();
-                    for (i,param) in func_params.iter().enumerate() {
+                } else {
+                    let func_params = func.params.clone();
+                    for (i, param) in func_params.iter().enumerate() {
                         let use_param = params_vec.get(i).unwrap();
-                        let same_flag = (use_param.is_int() && param.is_int()) || (use_param.is_array() && param.is_array());
+                        let same_flag = (use_param.is_int() && param.is_int())
+                            || (use_param.is_array() && param.is_array());
                         if !same_flag {
-                        // 参数类型不一致 需要添加类型8错误
-                            self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                            // 参数类型不一致 需要添加类型8错误
+                            self.collect_error(ErrorKind::Inappropriate, line_no, func_name);
                             return None;
                         }
                         if use_param.is_array() && param.is_array() {
-                           if let Type::Array(up) = use_param &&  let Type::Array(p) = param {
+                            if let Type::Array(up) = use_param
+                                && let Type::Array(p) = param
+                            {
                                 if up.get_dim_size() != p.get_dim_size() {
-                                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                                    self.collect_error(
+                                        ErrorKind::Inappropriate,
+                                        line_no,
+                                        func_name,
+                                    );
                                     return None;
                                 }
-                           }
+                            }
                         }
                     }
                 }
                 let return_ty = func.return_type.as_ref().clone();
                 return Some(return_ty); // 返回函数的返回值类型
+            }else {
+                self.collect_error(ErrorKind::UnlegalFuncCall, line_no, func_name);
             }
         } else {
             // 函数调用时没有传参数
             let function = self.scope_stack.get(func_name)?;
             if let Type::Func(func) = function {
                 if func.params.len() != 0 {
-                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                    self.collect_error(ErrorKind::Inappropriate, line_no, func_name);
                     return None;
                 }
                 let return_ty = func.return_type.as_ref().clone();
-                return Some(return_ty);  // 返回函数的返回值类型
+                return Some(return_ty); // 返回函数的返回值类型
+            }else {
+                self.collect_error(ErrorKind::UnlegalFuncCall, line_no, func_name);
             }
         }
         None
     }
 
-    fn analyze_primary_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type>{
+    fn analyze_primary_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
         let mut p_exp_iter = Self::skip_in(pair);
         let next = p_exp_iter.next().unwrap();
         if next.as_rule() == Rule::LVal {
@@ -439,36 +498,38 @@ impl<'a, W: Write> Checker<'a, W> {
         self.analyze_exp(exp)
     }
 
-    fn analyze_number(&mut self) -> Option<Type>{
+    fn analyze_number(&mut self) -> Option<Type> {
         Some(Type::Int)
     }
 
-
     ///
-    fn analyze_lval(&mut self, pair: Pair<'_, Rule>) -> Option<Type>{
+    fn analyze_lval(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
         let line_no = Self::get_line_no(pair.clone());
         let mut lval_iter = Self::skip_in(pair);
         let ident = lval_iter.next().unwrap();
         let ident_str = ident.as_str();
-        let undefined = self.check_undefine(ident_str, line_no,0);
+        let undefined = self.check_undefine(ident_str, line_no, 0);
         if undefined {
             return None;
         }
         let next = lval_iter.next();
         let val = self.scope_stack.get(ident_str);
-        if next.is_none() && let Some(ref v) = val {
+        if next.is_none()
+            && let Some(ref v) = val
+        {
             // 说明没有用数组操作符，直接返回使用元素的类型
             return Some(v.clone());
         }
-        if next.is_some() && let Some(v) = val {
+        if next.is_some()
+            && let Some(v) = val
+        {
             if !v.is_array() {
                 // 对非数组类型使用数组操作符
-                self.collect_error(ErrorKind::NotArrayAssign, line_no,ident_str);
+                self.collect_error(ErrorKind::NotArrayAssign, line_no, ident_str);
                 return None;
             }
-            let mut arr_iter = Self::skip_in(next.unwrap());
             let mut items = vec![];
-            while let Some(r) = arr_iter.next() {
+            while let Some(r) = lval_iter.next() {
                 if r.as_rule() == Rule::Exp {
                     let exp_ty = self.analyze_exp(r).unwrap();
                     items.push(exp_ty);
@@ -488,20 +549,168 @@ impl<'a, W: Write> Checker<'a, W> {
                     }
                     // 返回一个使用维度的数组类型
                     Some(Type::Array(arr))
-                }
+                };
             }
         }
         None
     }
 
     /// 解析条件语句
-    fn analyze_if_stmt(&mut self, pair: Pair<'_, Rule>) {}
+    fn analyze_if_stmt(&mut self, pair: Pair<'a, Rule>) {
+        let mut if_stmt_iter = Self::skip_in(pair).skip(2);
+        let cond = if_stmt_iter.next().unwrap();
+        // 解析条件
+        self.analyze_cond(cond);
+        let mut if_stmt_iter = if_stmt_iter.skip(1);
+        let stmt = if_stmt_iter.next().unwrap();
+        self.analyze_stmt(stmt);
+        let next = if_stmt_iter.next();
+        if next.is_none() {
+            return;
+        }else {
+            let next_stmt = if_stmt_iter.next().unwrap();
+            self.analyze_stmt(next_stmt);
+        }
+    }
+
+    /// 解析条件
+    fn analyze_cond(&mut self, pair: Pair<'a, Rule>) {
+        let mut cond_iter = Self::skip_in(pair);
+        let l_or_exp = cond_iter.next().unwrap();
+        self.analyze_lor_exp(l_or_exp);
+    }
+
+    fn analyze_lor_exp(&mut self, pair: Pair<'a, Rule>) {
+        let line_no = Self::get_line_no(pair.clone());
+        let lor_str = pair.as_str();
+        let mut lor_exp_iter = Self::skip_in(pair);
+        let mut l_and_exp_exps = Vec::<Type>::new();
+        while let Some(l_and_exp) = lor_exp_iter.next() {
+            if l_and_exp.as_rule() == Rule::LAndExp {
+                let l_and_exp_ty = self.analyze_l_and_exp(l_and_exp);
+                if l_and_exp_ty.is_none() {
+                    return;
+                }
+                l_and_exp_exps.push(l_and_exp_ty.unwrap());
+            }
+        }
+        // 判断类型是否存在数组或者函数，存在则添加错误
+        for ty in l_and_exp_exps.iter() {
+            if ty.is_array() || ty.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, lor_str);
+                return;
+            }
+        }
+
+    }
+
+    fn analyze_l_and_exp(&mut self, pair: Pair<'a, Rule>) -> Option<Type>{
+        let line_no = Self::get_line_no(pair.clone());
+        let lor_str = pair.as_str();
+        let mut l_and_exp_iter = Self::skip_in(pair);
+        let mut eq_exps = Vec::<Type>::new();
+        while let Some(eq_exp) = l_and_exp_iter.next() {
+            if eq_exp.as_rule() == Rule::EqExp {
+                let eq_exp_ty = self.analyze_eq_exp(eq_exp);
+                if eq_exp_ty.is_none() {
+                    return None;
+                }
+                eq_exps.push(eq_exp_ty.unwrap());
+            }
+        }
+        for ty in eq_exps.iter() {
+            if ty.is_array() || ty.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, lor_str);
+                return None;
+            }
+        }
+        Some(Type::Int)
+    }
+
+    fn analyze_eq_exp(&mut self, pair: Pair<'a, Rule>) -> Option<Type> {
+        let line_no = Self::get_line_no(pair.clone());
+        let lor_str = pair.as_str();
+        let mut eq_exp_iter = Self::skip_in(pair);
+        let mut rel_exps = Vec::<Type>::new();
+        while let Some(rel_exp) = eq_exp_iter.next() {
+            if rel_exp.as_rule() == Rule::RelExp {
+                let rel_exp_ty = self.analyze_rel_exp(rel_exp);
+                if rel_exp_ty.is_none() {
+                    return None;
+                }
+                rel_exps.push(rel_exp_ty.unwrap());
+            }
+        }
+        for ty in rel_exps.iter() {
+            if ty.is_array() || ty.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, lor_str);
+                return None;
+            }
+        }
+        Some(Type::Int)
+    }
+
+    fn analyze_rel_exp(&mut self, pair: Pair<'a, Rule>) -> Option<Type> {
+        let line_no = Self::get_line_no(pair.clone());
+        let lor_str = pair.as_str();
+        let mut rel_exp_iter = Self::skip_in(pair);
+        let mut add_exps = Vec::<Type>::new();
+        while let Some(add_exp) = rel_exp_iter.next() {
+            if add_exp.as_rule() == Rule::AddExp {
+                let add_exp_ty = self.analyze_add_exp(add_exp);
+                if add_exp_ty.is_none() {
+                    return None;
+                }
+                add_exps.push(add_exp_ty.unwrap());
+            }
+        }
+        for ty in add_exps.iter() {
+            if ty.is_array() || ty.is_func() {
+                self.collect_error(ErrorKind::TypeMismatchOp, line_no, lor_str);
+                return None;
+            }
+        }
+        Some(Type::Int)
+    }
 
     /// 解析循环语句
-    fn analyze_while_stmt(&mut self, pair: Pair<'_, Rule>) {}
+    fn analyze_while_stmt(&mut self, pair: Pair<'a, Rule>) {
+        let mut while_stmt_iter = Self::skip_in(pair).skip(2);
+        let cond = while_stmt_iter.next().unwrap();
+        self.analyze_cond(cond);
+        let mut while_stmt_iter = while_stmt_iter.skip(1);
+        let stmt = while_stmt_iter.next().unwrap();
+        self.analyze_stmt(stmt);
+    }
 
     /// 返回语句
-    fn analyze_return_stmt(&mut self, pair: Pair<'_, Rule>) {}
+    fn analyze_return_stmt(&mut self, pair: Pair<'a, Rule>) {
+        let line_no = Self::get_line_no(pair.clone());
+        let return_stmt_str = pair.as_str();
+        let mut return_stmt_iter = Self::skip_in(pair).skip(1);
+        let next = return_stmt_iter.next().unwrap();
+        if next.as_rule() == Rule::Exp {
+            let exp_ty =self.analyze_exp(next);
+            if exp_ty.is_none() {
+                return;
+            }
+            let ident = self.scope_stack.get_current_scope_key();
+            // if ident.is_none() {
+            //     self.collect_error(ErrorKind::ReturnMismatch, line_no, return_stmt_str);
+            //     return;
+            // }
+            let func = self.scope_stack.get(&ident.unwrap()).unwrap();
+            if let Type::Func(ty) = func && !ty.return_type.is_same_type(&exp_ty.unwrap())   {
+                self.collect_error(ErrorKind::ReturnMismatch, line_no, return_stmt_str);
+            }
+        }else {
+            let ident = self.scope_stack.get_current_scope_key();
+            let func = self.scope_stack.get(&ident.unwrap()).unwrap();
+            if let Type::Func(ty) = func && !ty.return_type.is_same_type(&Type::Void)   {
+                self.collect_error(ErrorKind::ReturnMismatch, line_no, return_stmt_str);
+            }
+        }
+    }
 
     /// 解析函数定义的参数列表
     fn analyze_func_params(&mut self, params: Pair<'_, Rule>) {
@@ -543,12 +752,30 @@ impl<'a, W: Write> Checker<'a, W> {
             }
             // 插入当前作用域的符号表中
             let current_scope = self.scope_stack.get_current_scope_mut().unwrap();
-            current_scope.insert(ident_name, Type::Array(arr));
+            current_scope.insert(ident_name, Type::Array(arr.clone()));
+            // 更新函数结构体中的参数列表
+            let func_key = self.scope_stack.get_current_scope_key().unwrap();
+            let func = self.scope_stack.get(&func_key).unwrap();
+            if let Type::Func(mut function) = func {
+                function.params.push(Type::Array(arr));
+                let global_scope = self.scope_stack.get_scope_mut(&ScopeKey::Global).unwrap();
+                global_scope.insert(func_key, Type::Func(function));
+            }
+        }else {
+            let current_scope = self.scope_stack.get_current_scope_mut().unwrap();
+            current_scope.insert(ident_name, Type::Int);
+            let func_key = self.scope_stack.get_current_scope_key().unwrap();
+            let func = self.scope_stack.get(&func_key).unwrap();
+            if let Type::Func(mut function) = func {
+                function.params.push(Type::Int);
+                let global_scope = self.scope_stack.get_scope_mut(&ScopeKey::Global).unwrap();
+                global_scope.insert(func_key, Type::Func(function));
+            }
         }
     }
 
     /// 语义检查变量定义
-    pub fn analyze_def(&mut self, var_def: Pair<'_, Rule>) {
+    pub fn analyze_def(&mut self, var_def: Pair<'a, Rule>) {
         let mut def_iter = Self::skip_in(var_def);
         let ident = def_iter.next().unwrap();
         let ident_str = ident.as_str();
@@ -571,24 +798,39 @@ impl<'a, W: Write> Checker<'a, W> {
                 for dim in dims {
                     array_str.insert_dim(dim);
                 }
-                // array 赋值错误校验
+                // array定义的 赋值错误校验
                 let mut def_iter = def_iter.skip(1);
                 let init_val = def_iter.next();
                 if let Some(val) = init_val {
-                    let val_ty_match = self.check_assign_type_match(val);
-                    if !val_ty_match {
-                        let scope = self.scope_stack.get_current_scope_mut().unwrap();
-                        scope
-                            .symbol_table
-                            .insert(ident_name, Type::Array(array_str));
+                    let val_ty = self.analyze_init(val).unwrap();
+                    if !val_ty.is_array() {
+                        self.collect_error(ErrorKind::TypeMismatchOp, line_no, ident_str);
+                        return;
+                    } else {
+                        // TODO 实验阶段 暂时不处理
+                        // if let Type::Array(val_ty) = val_ty {
+                        //     if val_ty.get_dim_size() != array_str.get_dim_size() {
+                        //         self.collect_error(ErrorKind::Other, line_no, ident_str);
+                        //         return;
+                        //     }
+                        // }
                     }
                 }
+                let scope = self.scope_stack.get_current_scope_mut().unwrap();
+                scope
+                    .symbol_table
+                    .insert(ident_name, Type::Array(array_str));
             } else {
-                // int 赋值类型错误校验
+                // int变量定义 赋值类型错误校验
                 let init_val = def_iter.next();
                 if let Some(val) = init_val {
-                    let val_ty_match = self.check_assign_type_match(val);
-                    if !val_ty_match {
+                    let val_ty = self.analyze_init(val);
+                    if val_ty.is_none() {
+                        return;
+                    }
+                    if !val_ty.unwrap().is_int() {
+                        self.collect_error(ErrorKind::TypeMismatchOp, line_no, ident_str);
+                    } else {
                         let scope = self.scope_stack.get_current_scope_mut().unwrap();
                         scope.symbol_table.insert(ident_name, Type::Int);
                     }
@@ -601,22 +843,30 @@ impl<'a, W: Write> Checker<'a, W> {
         }
     }
 
-    pub fn analyze_init(&mut self, init_val: Pair<'_, Rule>) -> Option<Type> {
+    pub fn analyze_init(&mut self, init_val: Pair<'a, Rule>) -> Option<Type> {
         match init_val.as_rule() {
             Rule::InitVal => {
                 let mut val_iter = Self::skip_in(init_val);
+                let mut val_rules = Vec::<Pair<'_, Rule>>::new();
                 let mut init_vals = vec![];
                 while let Some(val) = val_iter.next() {
                     if val.as_rule() == Rule::InitVal {
-                        let ty = self.analyze_init(val).unwrap();
-                        init_vals.push(ty);
+                        Self::analyze_init_val(val, &mut val_rules);
                         continue;
                     }
                     if val.as_rule() == Rule::Exp {
-                        let ty = self.analyze_exp(val).unwrap();
-                        init_vals.push(ty);
-                        continue;
+                        val_rules.push(val);
                     }
+                }
+                for val in val_rules {
+                    let ty = self.analyze_exp(val);
+                    if ty.is_none() {
+                        return None;
+                    }
+                    init_vals.push(ty);
+                }
+                if init_vals.len() == 1 {
+                    return Some(Type::Int);
                 }
                 let mut arr = ArrayStruct::new(Type::Int);
                 for _ in init_vals {
@@ -625,9 +875,65 @@ impl<'a, W: Write> Checker<'a, W> {
                 Some(Type::Array(arr))
             }
             Rule::ConstInitVal => {
-                //TODO 待实现
+                let mut const_iter = Self::skip_in(init_val);
+                let mut const_rules = Vec::<Pair<'_, Rule>>::new();
+                let mut const_inits = vec![];
+                while let Some(val) = const_iter.next() {
+                    if val.as_rule() == Rule::ConstInitVal {
+                        Self::analyze_init_val(val, &mut const_rules);
+                        continue;
+                    }
+                    if val.as_rule() == Rule::ConstExp {
+                        const_rules.push(val);
+                    }
+                }
+                for const_rule in const_rules {
+                    let add_exp = Self::skip_in(const_rule).next().unwrap();
+                    let ty = self.analyze_add_exp(add_exp)?;
+                    const_inits.push(ty);
+                }
+                if const_inits.len() == 1 {
+                    return Some(Type::Int);
+                }
+                let mut arr = ArrayStruct::new(Type::Int);
+                for _ in const_inits {
+                    arr.insert_dim(0);
+                }
+                Some(Type::Array(arr))
             }
-            _ => None
+            _ => None,
+        }
+    }
+
+    fn analyze_init_val(init_val: Pair<'a, Rule>, exps: &mut Vec<Pair<'a, Rule>>) {
+        match init_val.as_rule() {
+            Rule::InitVal => {
+                let mut val_iter = Self::skip_in(init_val);
+                while let Some(val) = val_iter.next() {
+                    if val.as_rule() == Rule::InitVal {
+                        Self::analyze_init_val(val, exps);
+                        continue;
+                    }
+                    if val.as_rule() == Rule::Exp {
+                        exps.push(val);
+                        continue;
+                    }
+                }
+            }
+            Rule::ConstInitVal => {
+                let mut const_val_iter = Self::skip_in(init_val);
+                while let Some(const_val) = const_val_iter.next() {
+                    if const_val.as_rule() == Rule::ConstInitVal {
+                        Self::analyze_init_val(const_val, exps);
+                        continue;
+                    }
+                    if const_val.as_rule() == Rule::ConstExp {
+                        exps.push(const_val);
+                        continue;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -671,7 +977,7 @@ impl<'a, W: Write> Checker<'a, W> {
 
     /// 校验函数、变量、数组在使用时是否已经定义
     fn check_undefine(&mut self, ident: &str, line_no: usize, op: usize) -> bool {
-        if self.scope_stack.contains(ident) {
+        if !self.scope_stack.contains(ident) {
             // 判断符号类型
             if op == 1 {
                 self.collect_error(ErrorKind::UndefinedFunc, line_no, ident);
@@ -727,6 +1033,10 @@ impl ScopeStack {
         self.scopes.remove(&key);
     }
 
+    pub fn update(&mut self, key: ScopeKey,scope: Scope) {
+        self.scopes.insert(key, scope);
+    }
+
     /// 获取作用域
     fn get_scope(&self, key: &ScopeKey) -> Option<&Scope> {
         self.scopes.get(key)
@@ -747,6 +1057,14 @@ impl ScopeStack {
     pub fn get_current_scope_mut(&mut self) -> Option<&mut Scope> {
         let last_key = self.stack.last().cloned()?; // 克隆键，避免借用冲突
         self.get_scope_mut(&last_key)
+    }
+
+    pub fn get_current_scope_key(&self) -> Option<String> {
+        let last_key = self.stack.last().cloned()?;
+        match last_key {
+            ScopeKey::Ident(name) => Some(name),
+            _ => None,
+        }
     }
 
     /// 校验contains.需要搜索所有活跃作用域（即 栈中的作用域）
@@ -770,7 +1088,6 @@ impl ScopeStack {
         }
         None
     }
-
 }
 
 /// 设定一个初始化的作用域栈
@@ -850,6 +1167,13 @@ impl Type {
             _ => false,
         }
     }
+
+    fn is_same_type(&self, other: &Self) -> bool {
+        (self.is_int() && other.is_int()) ||
+            (self.is_array() && other.is_array()) ||
+            (self.is_func() && other.is_func()) ||
+            (self.is_void() && other.is_void())
+    }
 }
 
 /// 函数类型表示
@@ -862,14 +1186,13 @@ pub struct Func {
 }
 
 impl Func {
-    fn new (params: Vec<Type>, return_type: Type) -> Self {
+    fn new(params: Vec<Type>, return_type: Type) -> Self {
         Self {
             params,
             return_type: Box::new(return_type),
         }
     }
 }
-
 
 /// 数组结果表示
 /// 维度和类型
@@ -1141,201 +1464,156 @@ mod tests {
         println!("a: {:?}, b: {:?}", a, b); // a: [1, 2, 3, 4, 5, 6], b: []
     }
 
-    // #[test]
-    // fn test_lab3_test() {
-    //     let filename = FILE_PATH.to_string() + "test.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut binding = stdout();
-    //     let mut checker = Checker::new(&file, &mut binding);
-    //     // checker.syn_check().unwrap();
-    // }
+    #[test]
+    fn test_lab3_test() {
+        let filename = FILE_PATH.to_string() + "test.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut binding = stdout();
+        let mut checker = Checker::new(&file, &mut binding);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_example01() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "example01.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest01() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = Vec::<u8>::new();
+        // let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest01.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+        let mut actual = String::from_utf8(buf).unwrap();
+        // 根据操作系统替换换行符
+        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
+        actual = actual.replace('\n', "\r\n");
+        let expected_filename = FILE_PATH.to_string() + "normaltest01.out";
+        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lab3_normaltest02() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = Vec::<u8>::new();
+        // let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest02.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+        let mut actual = String::from_utf8(buf).unwrap();
+        // 根据操作系统替换换行符
+        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
+        actual = actual.replace('\n', "\r\n");
+        let expected_filename = FILE_PATH.to_string() + "normaltest02.out";
+        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lab3_normaltest03() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = Vec::<u8>::new();
+        // let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest03.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+        let mut actual = String::from_utf8(buf).unwrap();
+        // 根据操作系统替换换行符
+        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
+        actual = actual.replace('\n', "\r\n");
+        let expected_filename = FILE_PATH.to_string() + "normaltest03.out";
+        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lab3_normaltest04() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = Vec::<u8>::new();
+        let filename = FILE_PATH.to_string() + "normaltest04.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+        let mut actual = String::from_utf8(buf).unwrap();
+        // 根据操作系统替换换行符
+        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
+        actual = actual.replace('\n', "\r\n");
+        let expected_filename = FILE_PATH.to_string() + "normaltest04.out";
+        let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_lab3_normaltest05() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest05.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest06() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest06.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest07() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest07.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
+
+    #[test]
+    fn test_lab3_normaltest08() {
+        // 1、把内容输出内存缓冲区
+        let mut buf = stdout();
+        let filename = FILE_PATH.to_string() + "normaltest08.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+
+    }
+
+    #[test]
+    fn test_lab3_normaltest09() {
+        // 1、把内容输出内存缓冲区
+        let mut buf =  stdout();
+        let filename = FILE_PATH.to_string() + "normaltest09.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
     //
-    // #[test]
-    // fn test_lab3_example01() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "example01.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "example01.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest01() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest01.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest01.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest02() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest02.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest02.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest03() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest03.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest03.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest04() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest04.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest04.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest05() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest05.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest05.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest06() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest06.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest06.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest07() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest07.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest07.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest08() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest08.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest08.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest09() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest09.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest09.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
-    //
-    // #[test]
-    // fn test_lab3_normaltest11() {
-    //     // 1、把内容输出内存缓冲区
-    //     let mut buf = Vec::<u8>::new();
-    //     let filename = FILE_PATH.to_string() + "normaltest11.sy";
-    //     let file = std::fs::read_to_string(filename).expect("Failed to read file");
-    //     let mut checker = Checker::new(&file, &mut buf);
-    //     checker.syn_check().unwrap();
-    //     let mut actual = String::from_utf8(buf).unwrap();
-    //     // 根据操作系统替换换行符
-    //     // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-    //     actual = actual.replace('\n', "\r\n");
-    //     let expected_filename = FILE_PATH.to_string() + "normaltest11.out";
-    //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
-    //     assert_eq!(actual, expected);
-    // }
+    #[test]
+    fn test_lab3_normaltest11() {
+        // 1、把内容输出内存缓冲区
+        let mut buf =  stdout();
+        let filename = FILE_PATH.to_string() + "normaltest11.sy";
+        let file = std::fs::read_to_string(filename).expect("Failed to read file");
+        let mut checker = Checker::new(&file, &mut buf);
+        checker.syn_check().unwrap();
+    }
 
     #[test]
     #[ignore]

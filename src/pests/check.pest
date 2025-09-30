@@ -135,8 +135,6 @@ BreakStmt = { Break ~ Semicolon }
 
 ContinueStmt = { Continue ~ Semicolon }
 
-AssignStmtRightExp = @{ Exp }
-
 ReturnStmt = { Return ~ Exp? ~ Semicolon }
 
 
@@ -144,11 +142,9 @@ ReturnStmt = { Return ~ Exp? ~ Semicolon }
 Exp         = { AddExp }                         // SysY 的表达式是 int
 Cond        = { LOrExp }
 
-LVal        = { LVarName ~ (Array)* }
+LVal        = { LVarName ~ (OpenBracket ~ Exp ~ CloseBracket)* }
 
 LVarName    = { Ident }
-
-Array       = { OpenBracket ~ Exp ~ CloseBracket }
 
 PrimaryExp  = { OpenParen ~ Exp ~ CloseParen | LVal | Number }
 
