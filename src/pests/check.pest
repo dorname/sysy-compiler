@@ -108,16 +108,32 @@ BlockItem   = { Decl | Stmt }
 
 Stmt        = {
       AssignStmt                    // 赋值
-    | Exp? ~ Semicolon                                 // 表达式语句（可为空）
+    | ExpStmt                              // 表达式语句（可为空）
     | Block                                      // 语句块
-    | If ~ OpenParen ~ Cond ~ CloseParen ~ Stmt ~ ( Else ~ Stmt )? // 条件语句
-    | While ~ OpenParen ~ Cond ~ CloseParen ~ Stmt // 循环语句
-    | Break ~ Semicolon // 跳出循环
-    | Continue ~ Semicolon // 继续下一轮循环
+    | IfStmt // 条件语句
+    | WhileStmt // 循环语句
+    | BreakStmt // 跳出循环
+    | ContinueStmt // 继续下一轮循环
     | ReturnStmt // 返回语句（可无返回值）
 }
 
+
+
 AssignStmt = { LVal ~ Assign ~ Exp ~ Semicolon  }
+
+ExpStmt = { Exp? ~ Semicolon }
+
+IfStmt = {
+    If ~ OpenParen ~ Cond ~ CloseParen ~ Stmt ~ ( Else ~ Stmt )?
+}
+
+WhileStmt = {
+    While ~ OpenParen ~ Cond ~ CloseParen ~ Stmt
+}
+
+BreakStmt = { Break ~ Semicolon }
+
+ContinueStmt = { Continue ~ Semicolon }
 
 AssignStmtRightExp = @{ Exp }
 

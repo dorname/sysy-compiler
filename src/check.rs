@@ -1,5 +1,5 @@
 //! SysY语言的语义检查器
-//! 
+//!
 //! 该模块实现了语义分析，包括：
 //! - 变量和函数声明检查
 //! - 表达式和赋值的类型检查
@@ -7,12 +7,12 @@
 //! - 函数调用参数验证
 //! - 数组访问验证
 
-use std::collections::HashMap;
 use crate::utils::{add_option_string, eq_option_string};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest_derive::Parser;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{self, Write};
@@ -21,10 +21,10 @@ use std::io::{self, Write};
 pub struct CParser;
 
 /// 使用语法规则解析输入文件
-/// 
+///
 /// # 参数
 /// * `input` - 要解析的源代码字符串
-/// 
+///
 /// # 返回值
 /// * `Some(Pairs)` - 如果解析成功
 /// * `None` - 如果解析失败（语法错误）
@@ -36,7 +36,7 @@ fn parse_file(input: &str) -> Option<Pairs<'_, Rule>> {
 }
 
 /// SysY语言的语义检查器
-/// 
+///
 /// 该结构体在语义分析期间维护状态，包括：
 /// - 变量和函数的符号表
 /// - 通过上下文堆栈进行作用域管理
@@ -50,7 +50,9 @@ pub struct Checker<'a, W: Write> {
     /// 累积的输出字符串
     output: String,
     /// 作用域栈
-    scope_stack: ScopeStack
+    scope_stack: ScopeStack,
+    /// 错误收集
+    errors: Vec<SemanticError<'a>>,
 }
 
 impl<'a, W: Write> Checker<'a, W> {
@@ -65,6 +67,7 @@ impl<'a, W: Write> Checker<'a, W> {
             writer,
             output: String::new(),
             scope_stack: Default::default(),
+            errors: Vec::new(),
         }
     }
     pub fn syn_check(&mut self) -> io::Result<()> {
@@ -77,15 +80,24 @@ impl<'a, W: Write> Checker<'a, W> {
             let declarations = compilation_unit.into_inner();
             // 依次解析声明
             for declaration in declarations {
-                // todo 声明解析
+                // 声明解析
                 self.analyze_declaration(declaration);
             }
-            dbg!(self.scope_stack.get_current_scope());
-            // todo 生成报错信息，并输出
-            // self.generate_error_output()?;
+            // dbg!(self.scope_stack.get_current_scope());
+            // 生成报错信息，并输出
+            self.generate_error_output()?;
         } else {
             writeln!(self.writer, "Syntax error")?;
         }
+        Ok(())
+    }
+
+    pub fn generate_error_output(&mut self) -> io::Result<()> {
+        for error in self.errors.iter_mut() {
+            error.build_str();
+            self.output += &error.output;
+        }
+        writeln!(self.writer, "{}", self.output)?;
         Ok(())
     }
 
@@ -97,73 +109,525 @@ impl<'a, W: Write> Checker<'a, W> {
                     self.analyze_declaration(decl);
                 }
             }
-            Rule::ConstDecl => {},
-            Rule::VarDecl => {
+            Rule::ConstDecl | Rule::VarDecl => {
                 self.analyze_var_decl(declaration);
-            },
-            Rule::FuncDef => {},
+            }
+            Rule::FuncDef => {
+                self.analyze_func_def(declaration);
+            }
             _ => {}
         }
     }
     /// 获取目标的规则的迭代器
-    fn skip_in(pair: Pair<Rule>) -> impl Iterator<Item=Pair<Rule>> {
+    fn skip_in(pair: Pair<Rule>) -> impl Iterator<Item = Pair<Rule>> {
         pair.into_inner().into_iter()
     }
-
-    /// 语义检查常量声明
-    pub fn analyze_const_decl(&mut self, const_decl: Pair<'_, Rule>) {
-        let mut decl_iter = Self::skip_in(const_decl);
-        let mut const_defs = Vec::<Pair<'_, Rule>>::new();
-        while let Some(const_def) = decl_iter.next(){
-            if const_def.as_rule() == Rule::ConstDef {
-                const_defs.push(const_def);
-            }
-        }
-    }
-
-    /// 语义检查常量定义
-    pub fn analyze_const_def(&mut self, const_def: Pair<'_, Rule>) {
-
-    }
-
 
     /// 语义检查变量声明
     pub fn analyze_var_decl(&mut self, var_decl: Pair<'_, Rule>) {
         let mut decl_iter = Self::skip_in(var_decl);
         let mut var_defs = Vec::<Pair<'_, Rule>>::new();
-        while let Some(var_def) = decl_iter.next(){
+        while let Some(var_def) = decl_iter.next() {
             if var_def.as_rule() == Rule::VarDef {
                 var_defs.push(var_def);
             }
         }
-        for var_def in var_defs  {
-            self.analyze_var_def(var_def);
+        for var_def in var_defs {
+            self.analyze_def(var_def);
+        }
+    }
+    /// 函数定义解析
+    fn analyze_func_def(&mut self, func_def: Pair<'_, Rule>) {
+        let mut func_def_iter = Self::skip_in(func_def);
+        let func_type = func_def_iter.next().unwrap();
+        let func_name = func_def_iter.next().unwrap();
+        let ident_name = func_name.as_str().to_string();
+        let line_no = Self::get_line_no(func_name);
+        //校验函数是否重复定义
+        let is_redefined = self.check_same_ident(&ident_name, line_no, 1);
+        if is_redefined {
+            return;
+        }
+
+        // 将函数类型加入到最近活跃作用域的符号表中
+        let func_ty = if func_type.as_rule() == Rule::Int { Type::Int } else { Type::Void };
+        let  function = Func::new(Vec::new(),func_ty);
+        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+        scope.insert(ident_name.clone(), Type::Func(function));
+
+        // 将函数更新为最近的活跃作用域
+        self.scope_stack.push(ScopeKey::Ident(ident_name));
+        // 解析函数参数
+        let mut func_def_iter = func_def_iter.skip(1);
+        let params = func_def_iter.next().unwrap();
+        let mut func_body = None;
+        if params.as_rule() == Rule::FuncFParams {
+            // 函数参数解析
+            self.analyze_func_params(params);
+            func_body = func_def_iter.skip(1).next();
+        } else {
+            func_body = func_def_iter.next();
+        }
+        // 开始解析函数体
+        let mut block_items = Vec::<Pair<'_, Rule>>::new();
+        while let Some(ref item) = func_body {
+            if item.as_rule() == Rule::BlockItem {
+                block_items.push(item.clone());
+            }
+        }
+        // 开始处理函数体中的每一项
+        for block_item in block_items {
+            self.analyze_block_item(block_item);
+        }
+        // 处理完整个块之后弹出作用域
+        self.scope_stack.pop();
+    }
+
+    /// 语义检查块中的每一项
+    fn analyze_block_item(&mut self, block_item: Pair<'_, Rule>) {
+        match block_item.as_rule() {
+            Rule::Decl => {
+                self.analyze_declaration(block_item);
+            }
+            Rule::Stmt => {
+                self.analyze_stmt(block_item);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn analyze_stmt(&mut self, stmt: Pair<'_, Rule>) {
+        let stmt_iter = Self::skip_in(stmt);
+        for p in stmt_iter {
+            match p.as_rule() {
+                Rule::AssignStmt => {
+                    self.analyze_assign_stmt(p);
+                }
+                Rule::IfStmt => {
+                    self.analyze_if_stmt(p);
+                }
+                Rule::WhileStmt => {
+                    self.analyze_while_stmt(p);
+                }
+                Rule::ReturnStmt => {
+                    self.analyze_return_stmt(p);
+                }
+                Rule::Block => {
+                    // 更新作用域
+                    self.scope_stack.push(ScopeKey::InnerBlock);
+                    let mut block_items = Vec::<Pair<'_, Rule>>::new();
+                    let mut inner_items = Self::skip_in(p);
+                    while let Some(ref item) = inner_items.next() {
+                        if item.as_rule() == Rule::BlockItem {
+                            block_items.push(item.clone());
+                        }
+                    }
+                    // 开始处理函数体中的每一项
+                    for block_item in block_items {
+                        self.analyze_block_item(block_item);
+                    }
+                    // 处理完整个块之后弹出作用域
+                    self.scope_stack.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 处理赋值语句
+    fn analyze_assign_stmt(&mut self, pair: Pair<'_, Rule>) {
+        let line_no = Self::get_line_no( pair.clone());
+        let stmt_str = pair.as_str();
+        let mut assign = Self::skip_in(pair);
+        let l_val = assign.next().unwrap();
+        let mut assign = assign.skip(1);
+        let r_exp = assign.next().unwrap();
+        let l_type = self.analyze_lval(l_val);
+        let r_type = self.analyze_exp(r_exp);
+        if l_type.is_none() || r_type.is_none() {
+            return;
+        }
+        if let (Some(l_type), Some(r_type)) = (l_type, r_type) {
+           if l_type.is_array() && r_type.is_array() {
+                // 判断维度是否一致
+                if let (Type::Array(l), Type::Array(r)) = (l_type, r_type) {
+                    if l.get_dim_size() != r.get_dim_size() {
+                        // 维度不一致
+                        self.collect_error(ErrorKind::TypeMismatch,line_no,stmt_str);
+                    }
+                }
+               return;
+           }
+            if l_type.is_func() {
+               // 对非变量和数组元素赋值
+               self.collect_error(ErrorKind::UnexpectedFuncAssign,line_no,stmt_str);
+                return;
+           }
+            if r_type.is_func() {
+               // 将函数赋值给数组或变量
+               self.collect_error(ErrorKind::TypeMismatch,line_no,stmt_str);
+                return;
+           }
+        }
+    }
+
+    /// 解析exp
+    /// 数据处理只需要保证最终结果类型，比如：
+    /// 函数调用func1() -> 返回类型
+    /// 数组访问arr[0] -> 返回类型
+    fn analyze_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let mut exp = Self::skip_in(pair);
+        let add_exp = exp.next().unwrap();
+        self.analyze_add_exp(add_exp)
+    }
+
+    /// 解析add_exp
+    fn analyze_add_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let mut add_exp = Self::skip_in(pair);
+        let l_mul_exp = add_exp.next()?;
+        let next = add_exp.next();
+        if next.is_none() {
+            self.analyze_mul_exp(l_mul_exp)
+        } else {
+            let r_mul_exp = add_exp.next().unwrap();
+            let l_type = self.analyze_mul_exp(l_mul_exp)?;
+            let r_type = self.analyze_mul_exp(r_mul_exp)?;
+            // 当返回为数组或者函数时，表达式使用时存在使用错误
+            if l_type.is_array()  || l_type.is_func()  {
+                Some(l_type)
+            }else if  r_type.is_func() || r_type.is_array() {
+                return Some(r_type);
+            }else if l_type.is_int() && r_type.is_int() {
+                return Some(Type::Int);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// 解析mul_exp
+    fn analyze_mul_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let mut mul_exp = Self::skip_in(pair);
+        let l_unary_exp = mul_exp.next().unwrap();
+        let next = mul_exp.next();
+        if next.is_none() {
+            self.analyze_unary_exp(l_unary_exp)
+        } else {
+            let r_unary_exp = mul_exp.next().unwrap();
+            let l_type = self.analyze_unary_exp(l_unary_exp)?;
+            let r_type = self.analyze_unary_exp(r_unary_exp)?;
+            // 当返回为数组或者函数时，表达式使用时存在使用错误
+            if l_type.is_array()  || l_type.is_func()  {
+                 Some(l_type)
+            }else if  r_type.is_func() || r_type.is_array() {
+                return Some(r_type);
+            }else if l_type.is_int() && r_type.is_int() {
+                return Some(Type::Int);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn analyze_unary_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let mut unary_exp = Self::skip_in(pair);
+        let inner_exp = unary_exp.next().unwrap();
+        match inner_exp.as_rule() {
+            Rule::CallExp => {
+                let call_exp = self.analyze_call_exp(inner_exp);
+                call_exp
+            }
+            Rule::PrimaryExp => {
+                let primary_exp = self.analyze_primary_exp(inner_exp);
+                primary_exp
+            }
+            Rule::UnaryOpExp => {
+                let unary_op_exp = self.analyze_unary_op_exp(inner_exp);
+                unary_op_exp
+            }
+            _ => None,
+        }
+    }
+
+    fn analyze_unary_op_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let mut unary_op_exp = Self::skip_in( pair).skip(1);
+        let unary_exp = unary_op_exp.next()?;
+        self.analyze_unary_exp(unary_exp)
+    }
+
+
+    fn analyze_call_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type> {
+        let line_no = Self::get_line_no(pair.clone());
+        let mut call_exp = Self::skip_in(pair);
+        let func_name = call_exp.next()?.as_str();
+        // 校验函数是否已经定义
+        let is_undefined = self.check_undefine(func_name, line_no, 1);
+        if is_undefined {
+            return None;
+        }
+        let mut call_exp = call_exp.skip(1);
+        let params = call_exp.next()?;
+        if params.as_rule() == Rule::FuncRParams {
+            // 函数调用时存在参数， 需要校验参数个数、参数类型
+            let mut params_iter = Self::skip_in(params);
+            // 收集调用参数
+            let mut params_vec = vec![];
+            while let Some(param) = params_iter.next() {
+                if param.as_rule() == Rule::Exp {
+                    let param_type = self.analyze_exp(param);
+                    if let Some(pty) = param_type {
+                        params_vec.push(pty);
+                    }
+                    continue;
+                }
+            }
+            // 开始校验参数个数是否一致
+            let function = self.scope_stack.get(func_name)?;
+            if let Type::Func(func)  = function {
+                if params_vec.len() != func.params.len() {
+                    // 参数个数不一致 需要添加类型8错误
+                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                    return None;
+                }else {
+                    let func_params= func.params.clone();
+                    for (i,param) in func_params.iter().enumerate() {
+                        let use_param = params_vec.get(i).unwrap();
+                        let same_flag = (use_param.is_int() && param.is_int()) || (use_param.is_array() && param.is_array());
+                        if !same_flag {
+                        // 参数类型不一致 需要添加类型8错误
+                            self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                            return None;
+                        }
+                        if use_param.is_array() && param.is_array() {
+                           if let Type::Array(up) = use_param &&  let Type::Array(p) = param {
+                                if up.get_dim_size() != p.get_dim_size() {
+                                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                                    return None;
+                                }
+                           }
+                        }
+                    }
+                }
+                let return_ty = func.return_type.as_ref().clone();
+                return Some(return_ty); // 返回函数的返回值类型
+            }
+        } else {
+            // 函数调用时没有传参数
+            let function = self.scope_stack.get(func_name)?;
+            if let Type::Func(func) = function {
+                if func.params.len() != 0 {
+                    self.collect_error(ErrorKind::Inappropriate,line_no,func_name);
+                    return None;
+                }
+                let return_ty = func.return_type.as_ref().clone();
+                return Some(return_ty);  // 返回函数的返回值类型
+            }
+        }
+        None
+    }
+
+    fn analyze_primary_exp(&mut self, pair: Pair<'_, Rule>) -> Option<Type>{
+        let mut p_exp_iter = Self::skip_in(pair);
+        let next = p_exp_iter.next().unwrap();
+        if next.as_rule() == Rule::LVal {
+            return self.analyze_lval(next);
+        }
+        if next.as_rule() == Rule::Number {
+            return self.analyze_number();
+        }
+        let exp = p_exp_iter.next().unwrap();
+        self.analyze_exp(exp)
+    }
+
+    fn analyze_number(&mut self) -> Option<Type>{
+        Some(Type::Int)
+    }
+
+
+    ///
+    fn analyze_lval(&mut self, pair: Pair<'_, Rule>) -> Option<Type>{
+        let line_no = Self::get_line_no(pair.clone());
+        let mut lval_iter = Self::skip_in(pair);
+        let ident = lval_iter.next().unwrap();
+        let ident_str = ident.as_str();
+        let undefined = self.check_undefine(ident_str, line_no,0);
+        if undefined {
+            return None;
+        }
+        let next = lval_iter.next();
+        let val = self.scope_stack.get(ident_str);
+        if next.is_none() && let Some(ref v) = val {
+            // 说明没有用数组操作符，直接返回使用元素的类型
+            return Some(v.clone());
+        }
+        if next.is_some() && let Some(v) = val {
+            if !v.is_array() {
+                // 对非数组类型使用数组操作符
+                self.collect_error(ErrorKind::NotArrayAssign, line_no,ident_str);
+                return None;
+            }
+            let mut arr_iter = Self::skip_in(next.unwrap());
+            let mut items = vec![];
+            while let Some(r) = arr_iter.next() {
+                if r.as_rule() == Rule::Exp {
+                    let exp_ty = self.analyze_exp(r).unwrap();
+                    items.push(exp_ty);
+                    continue;
+                }
+            }
+            // 数组类型 需要计算使用维度，如果使用维度等于定义维度则返回Int 否则返回一个使用维度的数组类型
+            if let Type::Array(ty) = v {
+                let dims = ty.get_dim_size() - items.len();
+                return if dims == 0 {
+                    Some(Type::Int)
+                } else {
+                    let old_type = ty.item_type.as_ref().clone();
+                    let mut arr = ArrayStruct::new(old_type);
+                    for _ in 0..dims {
+                        arr.insert_dim(0);
+                    }
+                    // 返回一个使用维度的数组类型
+                    Some(Type::Array(arr))
+                }
+            }
+        }
+        None
+    }
+
+    /// 解析条件语句
+    fn analyze_if_stmt(&mut self, pair: Pair<'_, Rule>) {}
+
+    /// 解析循环语句
+    fn analyze_while_stmt(&mut self, pair: Pair<'_, Rule>) {}
+
+    /// 返回语句
+    fn analyze_return_stmt(&mut self, pair: Pair<'_, Rule>) {}
+
+    /// 解析函数定义的参数列表
+    fn analyze_func_params(&mut self, params: Pair<'_, Rule>) {
+        let mut params_iter = Self::skip_in(params);
+        let mut params = Vec::<Pair<'_, Rule>>::new();
+        while let Some(param) = params_iter.next() {
+            if param.as_rule() == Rule::FuncFParam {
+                params.push(param);
+            }
+        }
+        for param in params {
+            self.analyze_func_param(param);
+        }
+    }
+
+    /// 语义检查函数定义的单个参数
+    fn analyze_func_param(&mut self, param: Pair<'_, Rule>) {
+        let mut param_iter = Self::skip_in(param).skip(1);
+        let ident = param_iter.next().unwrap();
+        let next_pair = param_iter.next();
+        let ident_name = ident.as_str().to_string();
+        let line_no = Self::get_line_no(ident);
+        // 校验当前作用域是否已经存在该变量了
+        let is_redefined = self.check_same_ident(&ident_name, line_no, 0);
+        if is_redefined {
+            return;
+        }
+        if next_pair.is_some() {
+            //参数为数组类型，分为两类：1、单维数组 2、多维数组
+            let mut arr = ArrayStruct::new(Type::Int);
+            arr.insert_dim(0); // 默认是单维
+            while let Some(next) = param_iter.next() {
+                //多维
+                if next.as_rule() == Rule::IntArr {
+                    let exp = Self::skip_in(next).skip(1).next().unwrap().as_str();
+                    arr.insert_dim(exp.parse::<usize>().unwrap());
+                    continue;
+                }
+            }
+            // 插入当前作用域的符号表中
+            let current_scope = self.scope_stack.get_current_scope_mut().unwrap();
+            current_scope.insert(ident_name, Type::Array(arr));
         }
     }
 
     /// 语义检查变量定义
-    pub fn analyze_var_def(&mut self, var_def: Pair<'_, Rule>) {
+    pub fn analyze_def(&mut self, var_def: Pair<'_, Rule>) {
         let mut def_iter = Self::skip_in(var_def);
         let ident = def_iter.next().unwrap();
+        let ident_str = ident.as_str();
+        let ident_name = ident_str.to_string();
+        let line_no = Self::get_line_no(ident);
+        // 重复定义校验
+        let is_redefine = self.check_same_ident(ident_str, line_no, 0);
+        if is_redefine {
+            // 出现重复定义问题，终止遍历
+            return;
+        }
         let next_pair = def_iter.next();
-        if let Some(scope) = self.scope_stack.get_current_scope_mut(){
-            let ident_name = ident.as_str().to_string();
-            if next_pair.is_some() {
-                let array_dims = next_pair.unwrap();
-                if array_dims.as_rule()==Rule::ArrayDims {
-                    let mut dims = Vec::<usize>::new();
-                    let mut array_str = ArrayStruct::new(Type::Int);
-                    Self::analyze_array_dims(array_dims,&mut dims);
-                    for dim in dims {
-                        array_str.insert_dim(dim);
-                    }
-                    scope.symbol_table.insert(ident_name, Type::Array(array_str));
-                }else {
-                    scope.symbol_table.insert(ident_name, Type::Int);
+
+        if next_pair.is_some() {
+            let nn = next_pair.unwrap();
+            if nn.as_rule() == Rule::ArrayDims {
+                let mut dims = Vec::<usize>::new();
+                let mut array_str = ArrayStruct::new(Type::Int);
+                Self::analyze_array_dims(nn, &mut dims);
+                for dim in dims {
+                    array_str.insert_dim(dim);
                 }
-            }else {
-                scope.symbol_table.insert(ident_name, Type::Int);
+                // array 赋值错误校验
+                let mut def_iter = def_iter.skip(1);
+                let init_val = def_iter.next();
+                if let Some(val) = init_val {
+                    let val_ty_match = self.check_assign_type_match(val);
+                    if !val_ty_match {
+                        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+                        scope
+                            .symbol_table
+                            .insert(ident_name, Type::Array(array_str));
+                    }
+                }
+            } else {
+                // int 赋值类型错误校验
+                let init_val = def_iter.next();
+                if let Some(val) = init_val {
+                    let val_ty_match = self.check_assign_type_match(val);
+                    if !val_ty_match {
+                        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+                        scope.symbol_table.insert(ident_name, Type::Int);
+                    }
+                }
             }
+        } else {
+            let scope = self.scope_stack.get_current_scope_mut().unwrap();
+            // 当下一个token为空时说明没有初始值，故不需要校验初值类型是否正确
+            scope.symbol_table.insert(ident_name, Type::Int);
+        }
+    }
+
+    pub fn analyze_init(&mut self, init_val: Pair<'_, Rule>) -> Option<Type> {
+        match init_val.as_rule() {
+            Rule::InitVal => {
+                let mut val_iter = Self::skip_in(init_val);
+                let mut init_vals = vec![];
+                while let Some(val) = val_iter.next() {
+                    if val.as_rule() == Rule::InitVal {
+                        let ty = self.analyze_init(val).unwrap();
+                        init_vals.push(ty);
+                        continue;
+                    }
+                    if val.as_rule() == Rule::Exp {
+                        let ty = self.analyze_exp(val).unwrap();
+                        init_vals.push(ty);
+                        continue;
+                    }
+                }
+                let mut arr = ArrayStruct::new(Type::Int);
+                for _ in init_vals {
+                    arr.insert_dim(0);
+                }
+                Some(Type::Array(arr))
+            }
+            Rule::ConstInitVal => {
+                //TODO 待实现
+            }
+            _ => None
         }
     }
 
@@ -174,28 +638,71 @@ impl<'a, W: Write> Checker<'a, W> {
                 Rule::ConstExp => {
                     let dim_size = Self::analyze_const_exp(inner_pair);
                     dims.push(dim_size);
-                },
+                }
                 _ => {}
             }
         }
     }
 
-    pub fn analyze_const_exp(const_exp: Pair<'_, Rule>)->usize {
+    pub fn analyze_const_exp(const_exp: Pair<'_, Rule>) -> usize {
         const_exp.as_str().trim().parse::<usize>().unwrap()
+    }
+
+    /// 判断在同一个作用域下，是否存在同名的标识符
+    /// op -> 0 当前正在定义变量
+    /// op -> 1 当前正在定义函数
+    pub fn check_same_ident(&mut self, ident: &str, line_no: usize, op: usize) -> bool {
+        let scope_option = self.scope_stack.get_current_scope();
+        if let Some(scope) = scope_option {
+            if scope.symbol_table.contains_key(ident) {
+                // 判断符号类型
+                if op == 1 {
+                    self.collect_error(ErrorKind::RedefineFunc, line_no, ident);
+                    return true;
+                }
+                if op == 0 {
+                    self.collect_error(ErrorKind::RedefineVal, line_no, ident);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 校验函数、变量、数组在使用时是否已经定义
+    fn check_undefine(&mut self, ident: &str, line_no: usize, op: usize) -> bool {
+        if self.scope_stack.contains(ident) {
+            // 判断符号类型
+            if op == 1 {
+                self.collect_error(ErrorKind::UndefinedFunc, line_no, ident);
+                return true;
+            }
+            if op == 0 {
+                self.collect_error(ErrorKind::UndefinedVal, line_no, ident);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 收集错误信息
+    fn collect_error(&mut self, error_kind: ErrorKind, line_no: usize, tips: &str) {
+        let checker_error = CheckError::new(error_kind, Some(tips.to_string()));
+        let semantic_error = SemanticError::new(line_no.to_string(), Some(checker_error));
+        self.errors.push(semantic_error);
+    }
+
+    /// 获取行号
+    fn get_line_no(pair: Pair<'_, Rule>) -> usize {
+        pair.line_col().0
     }
 }
 
-
-
-
-
-
-
-
-#[derive(Debug,Clone,Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum ScopeKey {
     Global,
     Ident(String),
+    InnerBlock,
 }
 
 /// 作用域栈
@@ -208,7 +715,6 @@ pub struct ScopeStack {
 }
 
 impl ScopeStack {
-
     /// 压入作用域
     pub fn push(&mut self, key: ScopeKey) {
         self.stack.push(key.clone());
@@ -236,18 +742,40 @@ impl ScopeStack {
         let last_key = self.stack.last().unwrap();
         self.get_scope(last_key)
     }
-    
+
     /// 获取可变的当前作用域的符号表
     pub fn get_current_scope_mut(&mut self) -> Option<&mut Scope> {
         let last_key = self.stack.last().cloned()?; // 克隆键，避免借用冲突
         self.get_scope_mut(&last_key)
     }
+
+    /// 校验contains.需要搜索所有活跃作用域（即 栈中的作用域）
+    pub fn contains(&self, name: &str) -> bool {
+        for scope_key in self.stack.iter().rev() {
+            let scope = self.get_scope(scope_key).unwrap();
+            if scope.contains(name.to_string()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 根据名称从最近的活跃作用域中符号表中抽取一个符号
+    pub fn get(&self, name: &str) -> Option<Type> {
+        for scope_key in self.stack.iter().rev() {
+            let scope = self.get_scope(scope_key).unwrap();
+            if let Some(symbol) = scope.get(name.to_string()) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+
 }
 
 /// 设定一个初始化的作用域栈
 impl Default for ScopeStack {
     fn default() -> Self {
-
         let stack = Vec::<ScopeKey>::new();
         let mut scope_stack = Self {
             stack,
@@ -274,22 +802,58 @@ impl Default for Scope {
 }
 
 impl Scope {
-    fn insert(&mut self, key: String, value: Type){
+    fn insert(&mut self, key: String, value: Type) {
         self.symbol_table.insert(key, value);
+    }
+
+    fn contains(&self, key: String) -> bool {
+        self.symbol_table.contains_key(&key)
+    }
+
+    fn get(&self, key: String) -> Option<Type> {
+        self.symbol_table.get(&key).cloned()
     }
 }
 
 /// 枚举类型
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Int,
     Func(Func),
     Void,
-    Array(ArrayStruct)
+    Array(ArrayStruct),
+}
+
+impl Type {
+    pub fn is_func(&self) -> bool {
+        match self {
+            Type::Func(_) => true,
+            _ => false,
+        }
+    }
+    pub fn is_array(&self) -> bool {
+        match self {
+            Type::Array(_) => true,
+            _ => false,
+        }
+    }
+    pub fn is_int(&self) -> bool {
+        match self {
+            Type::Int => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_void(&self) -> bool {
+        match self {
+            Type::Void => true,
+            _ => false,
+        }
+    }
 }
 
 /// 函数类型表示
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct Func {
     // 函数入参类型
     pub params: Vec<Type>,
@@ -297,9 +861,19 @@ pub struct Func {
     pub return_type: Box<Type>,
 }
 
+impl Func {
+    fn new (params: Vec<Type>, return_type: Type) -> Self {
+        Self {
+            params,
+            return_type: Box::new(return_type),
+        }
+    }
+}
+
+
 /// 数组结果表示
 /// 维度和类型
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct ArrayStruct {
     // 数组元素类型
     pub item_type: Box<Type>,
@@ -314,7 +888,7 @@ pub struct ArrayStruct {
 }
 
 impl ArrayStruct {
-    fn new(item_type: Type)->Self {
+    fn new(item_type: Type) -> Self {
         Self {
             item_type: Box::new(item_type),
             dim_nos: Vec::new(),
@@ -323,7 +897,7 @@ impl ArrayStruct {
             crr_no: 0,
         }
     }
-    fn insert_dim(&mut self,dim_size: usize)  {
+    fn insert_dim(&mut self, dim_size: usize) {
         self.dim_nos.push(self.crr_no);
         self.tpl_size.insert(self.crr_no, dim_size);
         self.array_dims += 1;
@@ -428,43 +1002,43 @@ impl CheckError {
     fn new(kind: ErrorKind, error_tip: Option<String>) -> Self {
         match kind {
             ErrorKind::UndefinedVal => {
-                CheckError::UndefinedVal(kind, "未定义的变量", error_tip)
+                CheckError::UndefinedVal(kind, "Undefined variable", error_tip)
             }
             ErrorKind::UndefinedFunc => {
-                CheckError::UndefinedFunc(kind, "未定义的函数", error_tip)
+                CheckError::UndefinedFunc(kind, "Undefined function", error_tip)
             }
             ErrorKind::RedefineVal => {
-                CheckError::RedefineVal(kind, "重复定义的变量", error_tip)
+                CheckError::RedefineVal(kind, "Redefined variable", error_tip)
             }
             ErrorKind::RedefineFunc => {
-                CheckError::RedefineFunc(kind, "重复定义的函数", error_tip)
+                CheckError::RedefineFunc(kind, "Redefined function", error_tip)
             }
             ErrorKind::TypeMismatch => {
-                CheckError::TypeMismatch(kind, "赋值的类型不匹配", error_tip)
+                CheckError::TypeMismatch(kind, "Type mismatched for assignment", error_tip)
             }
             ErrorKind::TypeMismatchOp => {
-                CheckError::TypeMismatchOp(kind, "操作符的类型不匹配", error_tip)
+                CheckError::TypeMismatchOp(kind, "Type mismatched for op", error_tip)
             }
             ErrorKind::ReturnMismatch => {
-                CheckError::ReturnMismatch(kind, "返回的类型不匹配", error_tip)
+                CheckError::ReturnMismatch(kind, "Type mismatched for return", error_tip)
             }
             ErrorKind::Inappropriate => CheckError::Inappropriate(
                 kind,
-                "函数不适用于参数",
+                "Function is not applicable for arguments",
                 error_tip,
             ),
             ErrorKind::NotArrayAssign => {
-                CheckError::NotArrayAssign(kind, "不是数组", error_tip)
+                CheckError::NotArrayAssign(kind, "Not an array", error_tip)
             }
             ErrorKind::UnlegalFuncCall => {
-                CheckError::UnlegalFuncCall(kind, "不是函数", error_tip)
+                CheckError::UnlegalFuncCall(kind, "Not a function", error_tip)
             }
             ErrorKind::UnexpectedFuncAssign => CheckError::UnexpectedFuncAssign(
                 kind,
-                "赋值的左侧必须是变量。",
+                "The left-hand side of an assignment must be a variable",
                 error_tip,
             ),
-            _ => CheckError::Other(kind, "其他错误", error_tip),
+            _ => CheckError::Other(kind, "other", error_tip),
         }
     }
 
@@ -522,7 +1096,7 @@ impl CheckError {
     fn build_str(&self) -> String {
         let tip = self.get_tip();
         if let Some(t) = tip {
-            format!("{}:{}", self.get_msg(), t)
+            format!("{} -> {}", self.get_msg(), t)
         } else {
             format!("{}", self.get_msg())
         }
@@ -531,9 +1105,9 @@ impl CheckError {
 
 #[cfg(test)]
 mod tests {
-    use crate::check::{parse_file, Checker, Rule};
-    use std::io::stdout;
+    use crate::check::{Checker, Rule, parse_file};
     use pest::iterators::Pair;
+    use std::io::stdout;
 
     const FILE_PATH: &str = "tests/lab3/";
     #[test]
@@ -575,7 +1149,7 @@ mod tests {
     //     let mut checker = Checker::new(&file, &mut binding);
     //     // checker.syn_check().unwrap();
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_example01() {
     //     // 1、把内容输出内存缓冲区
@@ -592,7 +1166,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest01() {
     //     // 1、把内容输出内存缓冲区
@@ -609,7 +1183,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest02() {
     //     // 1、把内容输出内存缓冲区
@@ -626,7 +1200,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest03() {
     //     // 1、把内容输出内存缓冲区
@@ -643,7 +1217,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest04() {
     //     // 1、把内容输出内存缓冲区
@@ -660,7 +1234,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest05() {
     //     // 1、把内容输出内存缓冲区
@@ -677,7 +1251,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest06() {
     //     // 1、把内容输出内存缓冲区
@@ -694,7 +1268,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest07() {
     //     // 1、把内容输出内存缓冲区
@@ -711,7 +1285,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest08() {
     //     // 1、把内容输出内存缓冲区
@@ -728,7 +1302,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest09() {
     //     // 1、把内容输出内存缓冲区
@@ -745,7 +1319,7 @@ mod tests {
     //     let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
     //     assert_eq!(actual, expected);
     // }
-    // 
+    //
     // #[test]
     // fn test_lab3_normaltest11() {
     //     // 1、把内容输出内存缓冲区
@@ -763,13 +1337,11 @@ mod tests {
     //     assert_eq!(actual, expected);
     // }
 
-
     #[test]
     #[ignore]
     fn test_number() {
         assert_eq!("0x10".parse::<i32>().is_ok(), true)
     }
-
 
     #[test]
     #[ignore]
