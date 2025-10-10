@@ -9,6 +9,7 @@ pest_derive = { version = "2.8.1", features = ["grammar-extras"] }
 clap = { version = "4.5.45", features = ["derive"] }
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
+inkwell = { version = "0.6.0", features = ["llvm14-0"] }
 
 [profile.dev]
 opt-level = 0

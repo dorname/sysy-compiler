@@ -5,19 +5,22 @@ mod check;
 mod format;
 mod lexer;
 mod utils;
+mod gen_llvm_ir;
 
-use crate::check::*;
+use crate::gen_llvm_ir::*;
 use lexer::*;
 use std::{env, fs};
 use std::io::{stderr, stdout};
+
+
 
 fn main() {
     // 收集命令行参数
     let args: Vec<String> = env::args().collect();
 
     // 检查是否提供了文件名
-    if args.len() < 2 {
-        eprintln!("Usage: {} <filename>", args[0]);
+    if args.len() < 3 {
+        eprintln!("Usage: {} <filename>,{}<output>", args[0],args[1]);
         std::process::exit(1);
     }
 
@@ -28,6 +31,4 @@ fn main() {
     let input = fs::read_to_string(filename).expect("Failed to read file");
 
     let mut binding = stderr();
-    let mut checker = Checker::new(&input, &mut binding);
-    let _ = checker.syn_check();
 }

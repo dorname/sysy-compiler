@@ -1,7 +1,0 @@
-int main()
-{
-    int a=0;
-    int b = {{1,2,3}, {4,5,6}};
-    while (a<1) a = a+1;
-    return -a;
-}

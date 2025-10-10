@@ -1,7 +1,0 @@
-int test_for_wrong_oct_number()
-{
-    int _decimal_number = 748;
-    int _wrong_oct_number_ = 0749;
-    int _wrong_hex_num = 0x9Ga;
-    return 0;
-}
