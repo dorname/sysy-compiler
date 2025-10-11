@@ -2,13 +2,10 @@
 #![allow(dead_code)]
 
 mod check;
-mod format;
-mod lexer;
 mod utils;
 mod gen_llvm_ir;
 
 use crate::gen_llvm_ir::*;
-use lexer::*;
 use std::{env, fs};
 use std::io::{stderr, stdout};
 
