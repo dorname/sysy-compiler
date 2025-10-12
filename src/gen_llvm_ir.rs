@@ -9,7 +9,7 @@
 
 use crate::utils::{add_option_string, eq_option_string};
 use inkwell::types::{BasicMetadataTypeEnum, IntType, VoidType};
-use inkwell::values::FunctionValue;
+use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest_derive::Parser;
@@ -54,7 +54,7 @@ pub struct Scanner<'a> {
     /// 输入源代码
     input: &'a str,
     /// 作用域栈
-    scope_stack: ScopeStack,
+    scope_stack: ScopeStack<'a>,
 }
 
 impl<'a> Scanner<'a> {
@@ -122,22 +122,7 @@ impl<'a> Scanner<'a> {
         let mut func_def_iter = Self::skip_in(pair);
         let func_type = Self::skip_in(func_def_iter.next().unwrap()).next().unwrap();
         let func_name = func_def_iter.next().unwrap();
-
-     
         let (fn_ret_type,fn_ret_type_void) = Self::build_fn_ret_type(&func_type, context);
-
-        let func_type = if fn_ret_type.is_some() {
-            ReturnType::Int
-        } else {
-            ReturnType::Void
-        };
-
-        // 获取当前作用域
-        let scope = self.scope_stack.get_current_scope_mut().unwrap();
-        // 将函数插入当前作用域的符号表
-        scope.insert(func_name.as_str().to_string(), Type::Func(func_type));
-        // 将函数更新为最近的活跃作用域
-        self.scope_stack.push(ScopeKey::Ident(func_name.as_str().to_string()));
 
         // 尝试抓取函数入参
         // --> 存在入参，需要解析入参，并插入到函数作用域的符号表，构建LLVM-IR时需要用到
@@ -150,9 +135,7 @@ impl<'a> Scanner<'a> {
         if params_rule.as_rule() == Rule::FuncFParams {
             //解析并收集参数
             params = Self::collect_func_params(params_rule);
-            let mut scope = self.scope_stack.get_current_scope_mut().unwrap();
             param_types = params.iter().map(|param| {
-                scope.insert(param.clone(), Type::Int(None));
                 context.i32_type().into()
             }).collect::<Vec<_>>();
             func_body = func_def_iter.skip(1).next();
@@ -169,6 +152,21 @@ impl<'a> Scanner<'a> {
             // 每次入参赋上源码的参数名称
             param.set_name(params[i].as_str());
         });
+
+        // 获取当前作用域
+        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+        // 将函数插入当前作用域的符号表
+        scope.insert(func_name.as_str().to_string(), Type::Func(function));
+        // 将函数更新为最近的活跃作用域
+        self.scope_stack.push(ScopeKey::Ident(func_name.as_str().to_string()));
+
+        // 获取当前作用域
+        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+        function.get_param_iter().enumerate().for_each(|(i,param)|{
+            // 把函数参数加入作用域
+            scope.insert(params[i],Type::Param(param.clone()));
+        });
+
         let block_name = format!("{}Entry", func_name.as_str());
         // 构建一个函数入口的基本块
         let entry_block = context.append_basic_block(function, &block_name);
@@ -242,9 +240,10 @@ impl<'a> Scanner<'a> {
         let mut assign_stmt_iter = Self::skip_in(assign_stmt);
         let i32_type = context.i32_type();
         let lval = assign_stmt_iter.next().unwrap();
-        let lval_ident = self.get_lval_ident(lval);
-        let lval_mem_store = builder.build_alloca(i32_type, &lval_ident);
+        // 读取符号表，获取已经分配好的内存地址名称
+        // let lval_ident = self.get_lval_ident(lval);
         let mut assign_stmt_iter = assign_stmt_iter.skip(1);
+
         let exp = assign_stmt_iter.next().unwrap();
         let temp_reg_name = self.scan_exp_stmt(exp, context, module, builder);
 
@@ -257,6 +256,7 @@ impl<'a> Scanner<'a> {
     fn get_lval_ident(&mut self,lval: Pair<'_, Rule>) -> String {
         let mut lval_iter = Self::skip_in(lval);
         let ident = lval_iter.next().unwrap();
+        //
         ident.as_str().to_string()
     }
 
@@ -324,10 +324,6 @@ impl<'a> Scanner<'a> {
         pair.into_inner().into_iter()
     }
 
-    /// 获取行号
-    fn get_line_no(pair: Pair<'_, Rule>) -> usize {
-        pair.line_col().0
-    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -339,11 +335,11 @@ pub enum ScopeKey {
 
 /// 作用域栈
 #[derive(Debug)]
-pub struct ScopeStack {
+pub struct ScopeStack<'ctx> {
     /// 作用域栈
     stack: Vec<ScopeKey>,
     /// 当前作用域的符号表
-    scopes: HashMap<ScopeKey,Scope>,
+    scopes: HashMap<ScopeKey,Scope<'ctx>>,
 }
 
 impl ScopeStack {
@@ -431,9 +427,9 @@ impl Default for ScopeStack {
 
 /// 作用域
 #[derive(Debug)]
-pub struct Scope {
+pub struct Scope<'ctx> {
     /// 当前作用域的符号表
-    pub symbol_table: HashMap<String, Type>,
+    pub symbol_table: HashMap<String, Type<'ctx>>,
 }
 
 
@@ -484,30 +480,18 @@ impl ReturnType {
 
 /// 枚举类型
 #[derive(Debug, Clone)]
-pub enum Type {
-    Int(Option<i32>),  //整型
-    Func(ReturnType), //函数信息只需要管返回类型，其他信息会放在符号表中管理。参数作为作用域的临时变量
+pub enum Type<'ctx> {
+    GlobalVar(GlobalValue<'ctx>),
+    Func(FunctionValue<'ctx>), //函数信息只需要管返回类型，其他信息会放在符号表中管理。参数作为作用域的临时变量
+    LocalVar(PointerValue<'ctx>), // 本地变量分配的空间
+    Param(BasicValueEnum<'ctx>)
 }
 
 impl Type {
     /// 读取整形值
-    pub fn get_value(& self) -> Option<i32> {
-        match self {
-            Type::Int(value) => value.clone(),
-            _ => panic!("Not an integer"),
-        }
-    }
-
     pub fn is_func(&self) -> bool {
         match self {
             Type::Func(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_int(&self) -> bool {
-        match self {
-            Type::Int(_) => true,
             _ => false,
         }
     }
