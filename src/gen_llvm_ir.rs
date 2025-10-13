@@ -7,6 +7,8 @@
 //! 3、符号表管理
 //! 4、LLVM-IR生成
 
+#![allow(E0277)]
+
 use crate::utils::{add_option_string, eq_option_string};
 use inkwell::types::{BasicMetadataTypeEnum, IntType, VoidType};
 use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
@@ -53,8 +55,7 @@ fn parse_file(input: &str) -> Option<Pairs<'_, Rule>> {
 pub struct Scanner<'a> {
     /// 输入源代码
     input: &'a str,
-    /// 作用域栈
-    scope_stack: ScopeStack<'a>,
+    ir_core: IrCore
 }
 
 impl<'a> Scanner<'a> {
@@ -66,10 +67,10 @@ impl<'a> Scanner<'a> {
     pub fn new(input: &'a str) -> Self {
         Scanner {
             input,
-            scope_stack: Default::default(),
+            ir_core: IrCore::new()
         }
     }
-    pub fn scan_collect(&mut self)  {
+    pub fn scan_collect(&self)  {
         if let Some(mut pairs) = parse_file(self.input) {
             // 处理文件头
             let file_pair = pairs.next().unwrap();
@@ -78,35 +79,33 @@ impl<'a> Scanner<'a> {
             // 获取所有的声明
             let declarations = compilation_unit.into_inner();
 
-            // 初始化构建llvm-ir的工具
-            let context = Context::create();
-            let module = context.create_module("module");
-            let builder = context.create_builder();
+            let mut ir_session = self.ir_core.start_session("module");
 
             // 依次扫描声明并收集符号
             for declaration in declarations {
                 // dbg!(declaration);
-                self.scan_declaration(declaration, &context, &module, &builder);
+                self.scan_declaration(declaration,&mut ir_session);
             }
             // 输出IR
-            module.print_to_file("output.ll").unwrap();
+            ir_session.module.print_to_file("output.ll").unwrap();
         }
     }
 
 
-    fn scan_declaration<'ctx>(&mut self,pair: Pair<'_, Rule>, context: &'ctx Context, module: &Module<'ctx>, builder: &Builder){
+    fn scan_declaration<'ctx>(&self,pair: Pair<'_, Rule>,
+                              ir_session: &mut IrSession<'ctx>) {
         match pair.as_rule() {
             Rule::Decl => {
                 
             },
             Rule::FuncDef => {
-                self.scan_func_def(pair, context, module, builder);
+                self.scan_func_def(pair, ir_session);
             },
             _ => {},
         }
     }
 
-    fn scan_decl(&mut self,pair: Pair<'_, Rule>){
+    fn scan_decl<'ctx>(&self,pair: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
         match pair.as_rule() {
             Rule::ConstDecl => {
                 
@@ -118,11 +117,11 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn scan_func_def<'ctx>(&mut self,pair: Pair<'_, Rule>, context: &'ctx Context, module: &Module<'ctx>, builder: &Builder){
+    fn scan_func_def<'ctx>(&self,pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         let mut func_def_iter = Self::skip_in(pair);
         let func_type = Self::skip_in(func_def_iter.next().unwrap()).next().unwrap();
         let func_name = func_def_iter.next().unwrap();
-        let (fn_ret_type,fn_ret_type_void) = Self::build_fn_ret_type(&func_type, context);
+        let (fn_ret_type,fn_ret_type_void) = Self::build_fn_ret_type(&func_type, ir_session.context);
 
         // 尝试抓取函数入参
         // --> 存在入参，需要解析入参，并插入到函数作用域的符号表，构建LLVM-IR时需要用到
@@ -136,7 +135,7 @@ impl<'a> Scanner<'a> {
             //解析并收集参数
             params = Self::collect_func_params(params_rule);
             param_types = params.iter().map(|param| {
-                context.i32_type().into()
+                ir_session.context.i32_type().into()
             }).collect::<Vec<_>>();
             func_body = func_def_iter.skip(1).next();
         } else {
@@ -147,31 +146,31 @@ impl<'a> Scanner<'a> {
         }else {
             fn_ret_type_void.unwrap().fn_type(&param_types, false)
         };
-        let function = module.add_function(func_name.as_str(), fn_type, None);
+        let function = ir_session.module.add_function(func_name.as_str(), fn_type, None);
         function.get_param_iter().enumerate().for_each(|(i,param)|{
             // 每次入参赋上源码的参数名称
             param.set_name(params[i].as_str());
         });
 
         // 获取当前作用域
-        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+        let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
         // 将函数插入当前作用域的符号表
         scope.insert(func_name.as_str().to_string(), Type::Func(function));
         // 将函数更新为最近的活跃作用域
-        self.scope_stack.push(ScopeKey::Ident(func_name.as_str().to_string()));
+        ir_session.scope_stack.push(ScopeKey::Ident(func_name.as_str().to_string()));
 
         // 获取当前作用域
-        let scope = self.scope_stack.get_current_scope_mut().unwrap();
+        let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
         function.get_param_iter().enumerate().for_each(|(i,param)|{
             // 把函数参数加入作用域
-            scope.insert(params[i],Type::Param(param.clone()));
+            scope.insert(params[i].clone(),Type::LocalVar(param.into_pointer_value()));
         });
 
         let block_name = format!("{}Entry", func_name.as_str());
         // 构建一个函数入口的基本块
-        let entry_block = context.append_basic_block(function, &block_name);
+        let entry_block = ir_session.context.append_basic_block(function, &block_name);
         // 光标移动到入口块末尾
-        builder.position_at_end(entry_block);
+        ir_session.builder.position_at_end(entry_block);
         // 开始解析函数体
         let mut block_items = Vec::<Pair<'_, Rule>>::new();
         let mut block_item_iter = Self::skip_in(func_body.unwrap());
@@ -182,13 +181,13 @@ impl<'a> Scanner<'a> {
         }
           // 开始处理函数体中的每一项
         for block_item in block_items {
-            self.scan_block_item(block_item, context, module, builder,&function);
+            self.scan_block_item(block_item, ir_session);
         }
-        self.scope_stack.pop();
+        ir_session.scope_stack.pop();
     }
 
    
-    fn scan_block_item(&mut self,block_item: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder,function: &FunctionValue){
+    fn scan_block_item<'ctx>(&self,block_item: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         match block_item.as_rule() {
             Rule::Decl => {
                 todo!();
@@ -196,7 +195,7 @@ impl<'a> Scanner<'a> {
             Rule::Stmt => {
                 let stmt_iter = Self::skip_in(block_item);
                 for stmt in stmt_iter {
-                    self.scan_stmt(stmt, context, module, builder,function);
+                    self.scan_stmt(stmt, ir_session);
                 }
             }
             _ => {},
@@ -204,22 +203,22 @@ impl<'a> Scanner<'a> {
     }
 
     /// 扫描stmt
-    fn scan_stmt(&mut self,stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder,function: &FunctionValue){
+    fn scan_stmt<'ctx>(&self,stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         match stmt.as_rule() {
             Rule::AssignStmt => {
-                self.scan_assign_stmt(stmt, context, module, builder);
+                self.scan_assign_stmt(stmt, ir_session);
             }
             Rule::ExpStmt => {
-                self.scan_exp_stmt(stmt, context, module, builder);
+                self.scan_exp_stmt(stmt, ir_session);
             }
             Rule::Block => {
-                self.scan_block(stmt, context, module, builder,function);
+                self.scan_block(stmt, ir_session);
             }
             Rule::IfStmt => {
-                self.scan_if_stmt(stmt, context, module, builder,function);
+                self.scan_if_stmt(stmt, ir_session);
             }
             Rule::WhileStmt => {
-                self.scan_while_stmt(stmt, context, module, builder,function);
+                self.scan_while_stmt(stmt, ir_session);
             }
             Rule::BreakStmt => {
                 todo!();
@@ -228,7 +227,7 @@ impl<'a> Scanner<'a> {
                 todo!();
             }
             Rule::ReturnStmt => {
-                self.scan_return_stmt(stmt, context, module, builder);
+                self.scan_return_stmt(stmt, ir_session);
             }
             _ => {},
         }
@@ -236,16 +235,15 @@ impl<'a> Scanner<'a> {
 
 
     /// 处理赋值语句
-    fn scan_assign_stmt(&mut self,assign_stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder){
+    fn scan_assign_stmt<'ctx>(&self,assign_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         let mut assign_stmt_iter = Self::skip_in(assign_stmt);
-        let i32_type = context.i32_type();
-        let lval = assign_stmt_iter.next().unwrap();
+        let i32_type = ir_session.context.i32_type();
+        let l_val = assign_stmt_iter.next().unwrap();
         // 读取符号表，获取已经分配好的内存地址名称
-        // let lval_ident = self.get_lval_ident(lval);
+        let l_val = self.scan_l_val_ident(l_val, ir_session);
         let mut assign_stmt_iter = assign_stmt_iter.skip(1);
-
         let exp = assign_stmt_iter.next().unwrap();
-        let temp_reg_name = self.scan_exp_stmt(exp, context, module, builder);
+        let temp_reg_name = self.scan_exp_stmt(exp, ir_session);
 
         // 把寄存器中的表达式结果存储到内存
 
@@ -253,11 +251,11 @@ impl<'a> Scanner<'a> {
     }
 
 
-    fn get_lval_ident(&mut self,lval: Pair<'_, Rule>) -> String {
-        let mut lval_iter = Self::skip_in(lval);
-        let ident = lval_iter.next().unwrap();
-        //
-        ident.as_str().to_string()
+    fn scan_l_val_ident<'ctx>(&self,l_val: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>) -> Option<Type<'ctx>> {
+        let mut l_val_iter = Self::skip_in(l_val);
+        let ident = l_val_iter.next().unwrap();
+        let scope  = ir_session.scope_stack.get_current_scope_mut().unwrap();
+        scope.get(ident.as_str().to_string())
     }
 
     /// 处理表达式语句
@@ -266,32 +264,32 @@ impl<'a> Scanner<'a> {
     /// 2、利用寄存器计算出结果后
     /// 3、把值从寄存器中取出写回到内存的变量中
     /// 需要返回临时寄存器名称，方便后续的赋值操作
-    fn scan_exp_stmt(&mut self,exp_stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder)->String{
+    fn scan_exp_stmt<'ctx>(&self,exp_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>)->String{
         todo!();
     }
 
     /// 处理语句块
-    fn scan_block(&mut self,block: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder,function: &FunctionValue){
+    fn scan_block<'ctx>(&self,block: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         todo!();
     }
     
     /// 处理条件语句
-    fn scan_if_stmt(&mut self,if_stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder,function: &FunctionValue){
+    fn scan_if_stmt<'ctx>(&self,if_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         todo!();
     }
     
     /// 处理循环语句
-    fn scan_while_stmt(&mut self,while_stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder,function: &FunctionValue){
+    fn scan_while_stmt<'ctx>(&self,while_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
         todo!();
     }
     
     /// 处理返回语句
-    fn scan_return_stmt(&mut self,return_stmt: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder){
+    fn scan_return_stmt<'ctx>(&self,return_stmt: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
         todo!();
     }   
 
     /// 处理表达式
-    fn scan_exp(&mut self,exp: Pair<'_, Rule>, context: &Context, module: &Module, builder: &Builder){
+    fn scan_exp<'ctx>(&mut self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
         todo!();
     }
 
@@ -326,6 +324,37 @@ impl<'a> Scanner<'a> {
 
 }
 
+#[derive(Debug)]
+pub struct IrCore {
+    context: Context,
+}
+
+impl IrCore {
+    pub fn new() -> IrCore {
+        Self {
+            context:Context::create()
+        }
+    }
+    pub fn start_session(&self, module_name: &str) -> IrSession {
+        let module = self.context.create_module(module_name);
+        let builder = self.context.create_builder();
+        IrSession {
+            context : &self.context,
+            module,
+            builder,
+            scope_stack:ScopeStack::default(),
+        }
+    }
+}
+
+/// 参数传递对象
+pub struct IrSession<'ctx> {
+    pub context: &'ctx Context,
+    pub module: Module<'ctx>,
+    pub builder: Builder<'ctx>,
+    pub scope_stack: ScopeStack<'ctx>
+}
+
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum ScopeKey {
     Global, // 全局作用域
@@ -342,7 +371,8 @@ pub struct ScopeStack<'ctx> {
     scopes: HashMap<ScopeKey,Scope<'ctx>>,
 }
 
-impl ScopeStack {
+#[allow(E0621)]
+impl <'ctx> ScopeStack<'ctx> {
     /// 压入作用域
     pub fn push(&mut self, key: ScopeKey) {
         self.stack.push(key.clone());
@@ -355,7 +385,7 @@ impl ScopeStack {
         self.scopes.remove(&key);
     }
 
-    pub fn update(&mut self, key: ScopeKey,scope: Scope) {
+    pub fn update(&mut self, key: ScopeKey,scope: Scope<'ctx>) {
         self.scopes.insert(key, scope);
     }
 
@@ -365,7 +395,7 @@ impl ScopeStack {
     }
 
     /// 获取可变的作用域
-    fn get_scope_mut(&mut self, key: &ScopeKey) -> Option<&mut Scope> {
+    fn get_scope_mut(&mut self, key: &ScopeKey) -> Option<&mut Scope<'ctx>> {
         self.scopes.get_mut(key)
     }
 
@@ -376,7 +406,7 @@ impl ScopeStack {
     }
 
     /// 获取可变的当前作用域的符号表
-    pub fn get_current_scope_mut(&mut self) -> Option<&mut Scope> {
+    pub fn get_current_scope_mut(&mut self) -> Option<&mut Scope<'ctx>> {
         let last_key = self.stack.last().cloned()?; // 克隆键，避免借用冲突
         self.get_scope_mut(&last_key)
     }
@@ -413,7 +443,7 @@ impl ScopeStack {
 }
 
 /// 设定一个初始化的作用域栈
-impl Default for ScopeStack {
+impl<'ctx> Default for ScopeStack<'ctx> {
     fn default() -> Self {
         let stack = Vec::<ScopeKey>::new();
         let mut scope_stack = Self {
@@ -433,7 +463,7 @@ pub struct Scope<'ctx> {
 }
 
 
-impl Default for Scope {
+impl<'ctx> Default for Scope<'ctx> {
     fn default() -> Self {
         Scope {
             symbol_table: HashMap::new(),
@@ -441,9 +471,9 @@ impl Default for Scope {
     }
 }
 
-impl Scope {
+impl <'ctx> Scope <'ctx> {
 
-    fn insert(&mut self, key: String, value: Type) {
+    fn insert(&mut self, key: String, value: Type<'ctx>) {
         self.symbol_table.insert(key, value);
     }
 
@@ -451,30 +481,8 @@ impl Scope {
         self.symbol_table.contains_key(&key)
     }
 
-    fn get(&self, key: String) -> Option<Type> {
+    fn get(&self, key: String) -> Option<Type<'ctx>> {
         self.symbol_table.get(&key).cloned()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ReturnType {
-    Void,
-    Int
-}
-
-impl ReturnType {
-    fn is_int(&self) -> bool {
-        match self {
-            ReturnType::Int => true,
-            _ => false,
-        }
-    }
-    
-    fn is_void(&self) -> bool {
-        match self {
-            ReturnType::Void => true,
-            _ => false,
-        }
     }
 }
 
@@ -483,11 +491,10 @@ impl ReturnType {
 pub enum Type<'ctx> {
     GlobalVar(GlobalValue<'ctx>),
     Func(FunctionValue<'ctx>), //函数信息只需要管返回类型，其他信息会放在符号表中管理。参数作为作用域的临时变量
-    LocalVar(PointerValue<'ctx>), // 本地变量分配的空间
-    Param(BasicValueEnum<'ctx>)
+    LocalVar(PointerValue<'ctx>), // 本地变量分配的空间,包括函数参数
 }
 
-impl Type {
+impl <'ctx> Type <'ctx> {
     /// 读取整形值
     pub fn is_func(&self) -> bool {
         match self {
@@ -503,6 +510,7 @@ mod tests {
     use crate::gen_llvm_ir::{Scanner, Rule, parse_file};
     use pest::iterators::Pair;
     use std::io::stdout;
+    use inkwell::context::Context;
 
     const FILE_PATH: &str = "tests/lab5/";
 
@@ -513,5 +521,31 @@ mod tests {
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let mut scanner = Scanner::new(&input);
         scanner.scan_collect();
+    }
+
+    #[test]
+    fn test_llvm_fn(){
+        let context = Context::create();
+        let module = context.create_module("main");
+        let builder = context.create_builder();
+        let i32_type = context.i32_type();
+        let fn_type = i32_type.fn_type(&[i32_type.into(), i32_type.into()], false);
+        let function = module.add_function("main", fn_type, None);
+        let basic_block = context.append_basic_block(function, "entry");
+        builder.position_at_end(basic_block);
+        // 函数参数处理
+        let a = function.get_first_param().unwrap().into_int_value();
+        let b = function.get_nth_param(1).unwrap().into_int_value();
+        let sum =builder.build_int_add(a, b, "sum").unwrap();
+
+        // 定义变量
+        let c = builder.build_alloca(i32_type,"c").unwrap();
+        let init_val = i32_type.const_int(1,false);
+        let _ = builder.build_store(c,init_val);
+
+        // 变量赋值
+
+        let _ = builder.build_return(Some(&sum));
+        module.print_to_stderr();
     }
 }
