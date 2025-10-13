@@ -131,11 +131,12 @@ impl<'a> Scanner<'a> {
         let mut func_body = None;
         let mut params = Vec::<String>::new();
         let mut param_types = Vec::<BasicMetadataTypeEnum>::new();
+        let i32_type = ir_session.context.i32_type();
         if params_rule.as_rule() == Rule::FuncFParams {
             //解析并收集参数
             params = Self::collect_func_params(params_rule);
             param_types = params.iter().map(|param| {
-                ir_session.context.i32_type().into()
+                i32_type.into()
             }).collect::<Vec<_>>();
             func_body = func_def_iter.skip(1).next();
         } else {
@@ -161,16 +162,22 @@ impl<'a> Scanner<'a> {
 
         // 获取当前作用域
         let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
-        function.get_param_iter().enumerate().for_each(|(i,param)|{
-            // 把函数参数加入作用域
-            scope.insert(params[i].clone(),Type::LocalVar(param.into_pointer_value()));
-        });
-
         let block_name = format!("{}Entry", func_name.as_str());
         // 构建一个函数入口的基本块
         let entry_block = ir_session.context.append_basic_block(function, &block_name);
         // 光标移动到入口块末尾
         ir_session.builder.position_at_end(entry_block);
+
+        function.get_param_iter().enumerate().for_each(|(i,param)|{
+            // 每次入参赋上源码的参数名称
+            let t = params[i].as_str();
+            let temp = ir_session.builder.build_alloca(i32_type,t).unwrap();
+            temp.set_name(t);
+            scope.insert(param.get_name().to_str().unwrap().to_string(),Type::LocalVar(temp));
+            param.set_name(t);
+        });
+
+
         // 开始解析函数体
         let mut block_items = Vec::<Pair<'_, Rule>>::new();
         let mut block_item_iter = Self::skip_in(func_body.unwrap());
@@ -240,7 +247,7 @@ impl<'a> Scanner<'a> {
         let i32_type = ir_session.context.i32_type();
         let l_val = assign_stmt_iter.next().unwrap();
         // 读取符号表，获取已经分配好的内存地址名称
-        let l_val = self.scan_l_val_ident(l_val, ir_session);
+        let l_val = self.scan_l_val_ident(l_val, ir_session).unwrap();
         let mut assign_stmt_iter = assign_stmt_iter.skip(1);
         let exp = assign_stmt_iter.next().unwrap();
         let temp_reg_name = self.scan_exp_stmt(exp, ir_session);
@@ -285,7 +292,13 @@ impl<'a> Scanner<'a> {
     
     /// 处理返回语句
     fn scan_return_stmt<'ctx>(&self,return_stmt: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
-        todo!();
+        let exp = Self::skip_in(return_stmt).skip(1).next().unwrap();
+        let i32_type = ir_session.context.i32_type();
+        if exp.as_rule() != Rule::Exp {
+           let _ = ir_session.builder.build_return(None);
+            return;
+        }
+        // 处理exp 的计算结果，并根据结果构建返回值
     }   
 
     /// 处理表达式
@@ -503,6 +516,27 @@ impl <'ctx> Type <'ctx> {
         }
     }
 
+    pub fn get_local(&self) -> Option<&PointerValue<'ctx>> {
+        if let Type::LocalVar(v) = self {
+            return Some(v);
+        }
+        None
+    }
+
+    pub fn get_global(&self) -> Option<&GlobalValue<'ctx>> {
+        if let Type::GlobalVar(v) = self {
+            return Some(v);
+        }
+        None
+    }
+
+    pub fn get_function(&self) -> Option<&FunctionValue<'ctx>> {
+        if let Type::Func(v) = self {
+            return Some(v);
+        }
+        None
+    }
+
 }
 
 #[cfg(test)]
@@ -517,7 +551,7 @@ mod tests {
     
     #[test]
     fn test_scan() {
-        let file_path = format!("{}{}", FILE_PATH, "example01.sy");
+        let file_path = format!("{}{}", FILE_PATH, "example05.sy");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let mut scanner = Scanner::new(&input);
         scanner.scan_collect();
@@ -542,7 +576,6 @@ mod tests {
         let c = builder.build_alloca(i32_type,"c").unwrap();
         let init_val = i32_type.const_int(1,false);
         let _ = builder.build_store(c,init_val);
-
         // 变量赋值
 
         let _ = builder.build_return(Some(&sum));
