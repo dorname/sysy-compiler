@@ -11,7 +11,7 @@
 
 use crate::utils::{add_option_string, eq_option_string};
 use inkwell::types::{BasicMetadataTypeEnum, IntType, VoidType};
-use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest_derive::Parser;
@@ -272,6 +272,9 @@ impl<'a> Scanner<'a> {
     /// 3、把值从寄存器中取出写回到内存的变量中
     /// 需要返回临时寄存器名称，方便后续的赋值操作
     fn scan_exp_stmt<'ctx>(&self,exp_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>)->String{
+        let mut exp_stmt_iter = Self::skip_in(exp_stmt);
+        let exp = exp_stmt_iter.next().unwrap();
+        self.scan_exp(exp, ir_session);
         todo!();
     }
 
@@ -302,8 +305,60 @@ impl<'a> Scanner<'a> {
     }   
 
     /// 处理表达式
-    fn scan_exp<'ctx>(&mut self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
-        todo!();
+    fn scan_exp<'ctx>(&self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue>{
+        let mut exp_iter = Self::skip_in(exp);
+        let add_exp = exp_iter.next().unwrap();
+        self.scan_add_exp(add_exp, ir_session)
+    }
+
+    fn scan_add_exp<'ctx>(&self,add_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue>{
+        let mut add_exp_iter = Self::skip_in(add_exp);
+        // 读取乘法表达式
+        let mul_exp = add_exp_iter.next().unwrap();
+        let left_exp = self.scan_mul_exp(mul_exp, ir_session);
+        let op = add_exp_iter.next();
+        if op.is_some() {
+            // 读取另一个乘法表达式
+            let mul_exp_another = add_exp_iter.next().unwrap();
+            let right_exp = self.scan_mul_exp(mul_exp_another, ir_session);
+            if let Some(right) = right_exp && let Some(left) = left_exp {
+                match op.unwrap().as_rule() {
+                    Rule::Mod => {
+                        Some(ir_session.builder.build_int_signed_rem(left,right,"tmp").unwrap())
+                    }
+                    Rule::Div => {
+                        Some(ir_session.builder.build_int_signed_div(left,right,"tmp").unwrap())
+                    }
+                    Rule::Mul => {
+                        Some(ir_session.builder.build_int_mul(left,right,"tmp").unwrap())
+                    }
+                    _ => None
+                }
+            }else {
+                None
+            }
+        }else {
+           left_exp
+        }
+    }
+
+    ///
+    fn scan_mul_exp<'ctx>(&self,mul_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue>{
+        let mut mul_iter = Self::skip_in(mul_exp);
+        let unary_exp = mul_iter.next().unwrap();
+        todo!()
+    }
+
+    fn scan_unary_exp<'ctx>(&self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue>{
+        let mut unary_exp_iter = Self::skip_in(exp);
+        let op = unary_exp_iter.next();
+        match op.unwrap().as_rule() {
+            Rule::Not => {}
+            Rule::Plus => {}
+            Rule::Minus => {}
+            _ => None
+        }
+        todo!()
     }
 
     /// 收集函数入参
