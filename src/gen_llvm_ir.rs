@@ -465,10 +465,15 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn scan_cond<'ctx>(&self,cond_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
+    fn scan_cond<'ctx>(&self,cond_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
         let mut cond_exp_iter = Self::skip_in(cond_exp);
         let l_or_exp = cond_exp_iter.next().unwrap();
-        self.scan_l_or_exp(l_or_exp, ir_session)
+        let l_or_exp = self.scan_l_or_exp(l_or_exp, ir_session).unwrap();
+        // 1、添加条件块
+        let parent = ir_session.builder.get_insert_block().unwrap().get_parent().unwrap();
+        let true_bb = ir_session.context.append_basic_block(parent, "or_true");
+        let false_bb = ir_session.context.append_basic_block(parent, "or_false");
+        let next_bb = ir_session.context.append_basic_block(parent, "or_next");
     }
 
     fn scan_l_or_exp<'ctx>(&self,l_or_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
@@ -479,8 +484,17 @@ impl<'a> Scanner<'a> {
                 l_or_exps.push(self.scan_l_or_exp(e, ir_session).unwrap());
             }
         }
+        let zero = ir_session.context.i32_type().const_int(0,false);
         // 只要有一个为真则总体为真
-        todo!()
+        let flag = l_or_exps.iter().find(|e|{
+            e.eq(&zero)
+        });
+        if flag.is_some() {
+            let result = *flag.unwrap();
+            Some(result)
+        }else {
+            Some(zero)
+        }
     }
     
     fn scan_l_and_exp<'ctx>(&self,l_and_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
