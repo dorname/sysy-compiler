@@ -6,14 +6,19 @@
 //! 2、作用域栈管理
 //! 3、符号表管理
 //! 4、LLVM-IR生成
-
-#![allow(E0277)]
-
+use inkwell::basic_block::BasicBlock;
 use crate::utils::{add_option_string, eq_option_string};
+use inkwell::IntPredicate;
+use inkwell::builder::Builder;
+use inkwell::context::{self, Context};
+use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, IntType, VoidType};
-use inkwell::values::{BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue, PointerValue};
+use inkwell::values::{
+    BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue, PointerValue,
+};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
+use pest::pratt_parser::Op;
 use pest_derive::Parser;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -21,11 +26,7 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{self, Write};
 use std::thread::scope;
-use inkwell::builder::Builder;
-use inkwell::context::{self, Context};
-use inkwell::IntPredicate;
-use inkwell::module::Module;
-use pest::pratt_parser::Op;
+use inkwell::IntPredicate::{EQ, NE, SGE, SGT, SLE, SLT};
 
 #[derive(Parser)]
 #[grammar = "pests/scan.pest"]
@@ -56,7 +57,7 @@ fn parse_file(input: &str) -> Option<Pairs<'_, Rule>> {
 pub struct Scanner<'a> {
     /// 输入源代码
     input: &'a str,
-    ir_core: IrCore
+    ir_core: IrCore,
 }
 
 impl<'a> Scanner<'a> {
@@ -68,10 +69,10 @@ impl<'a> Scanner<'a> {
     pub fn new(input: &'a str) -> Self {
         Scanner {
             input,
-            ir_core: IrCore::new()
+            ir_core: IrCore::new(),
         }
     }
-    pub fn scan_collect(&self)  {
+    pub fn scan_collect(&self) {
         if let Some(mut pairs) = parse_file(self.input) {
             // 处理文件头
             let file_pair = pairs.next().unwrap();
@@ -85,44 +86,56 @@ impl<'a> Scanner<'a> {
             // 依次扫描声明并收集符号
             for declaration in declarations {
                 // dbg!(declaration);
-                self.scan_declaration(declaration,&mut ir_session);
+                self.scan_declaration(declaration, &mut ir_session);
             }
             // 输出IR
             ir_session.module.print_to_file("output.ll").unwrap();
         }
     }
 
-
-    fn scan_declaration<'ctx>(&self,pair: Pair<'_, Rule>,
-                              ir_session: &mut IrSession<'ctx>) {
+    fn scan_declaration<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
         match pair.as_rule() {
             Rule::Decl => {
-                
-            },
+                self.scan_decl(pair,ir_session);
+            }
             Rule::FuncDef => {
                 self.scan_func_def(pair, ir_session);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
-    fn scan_decl<'ctx>(&self,pair: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
-        match pair.as_rule() {
-            Rule::ConstDecl => {
-                
-            },
-            Rule::VarDecl => {
-
-            },
-            _ => {},
+    fn scan_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+        let mut decl_iter = Self::skip_in(pair);
+        for decl in decl_iter {
+            match decl.as_rule() {
+                Rule::ConstDecl => {
+                    self.scan_const_decl(decl, ir_session);
+                }
+                Rule::VarDecl => {
+                    self.scan_var_decl(decl, ir_session);
+                }
+                _ => {}
+            }
         }
+
     }
 
-    fn scan_func_def<'ctx>(&self,pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+    fn scan_const_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+        todo!()
+    }
+
+    fn scan_var_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+        todo!()
+    }
+
+
+    fn scan_func_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
         let mut func_def_iter = Self::skip_in(pair);
         let func_type = Self::skip_in(func_def_iter.next().unwrap()).next().unwrap();
         let func_name = func_def_iter.next().unwrap();
-        let (fn_ret_type,fn_ret_type_void) = Self::build_fn_ret_type(&func_type, ir_session.context);
+        let (fn_ret_type, fn_ret_type_void) =
+            Self::build_fn_ret_type(&func_type, ir_session.context);
 
         // 尝试抓取函数入参
         // --> 存在入参，需要解析入参，并插入到函数作用域的符号表，构建LLVM-IR时需要用到
@@ -136,30 +149,38 @@ impl<'a> Scanner<'a> {
         if params_rule.as_rule() == Rule::FuncFParams {
             //解析并收集参数
             params = Self::collect_func_params(params_rule);
-            param_types = params.iter().map(|param| {
-                i32_type.into()
-            }).collect::<Vec<_>>();
+            param_types = params
+                .iter()
+                .map(|param| i32_type.into())
+                .collect::<Vec<_>>();
             func_body = func_def_iter.skip(1).next();
         } else {
             func_body = func_def_iter.next();
         }
         let fn_type = if fn_ret_type.is_some() {
             fn_ret_type.unwrap().fn_type(&param_types, false)
-        }else {
+        } else {
             fn_ret_type_void.unwrap().fn_type(&param_types, false)
         };
-        let function = ir_session.module.add_function(func_name.as_str(), fn_type, None);
-        function.get_param_iter().enumerate().for_each(|(i,param)|{
-            // 每次入参赋上源码的参数名称
-            param.set_name(params[i].as_str());
-        });
+        let function = ir_session
+            .module
+            .add_function(func_name.as_str(), fn_type, None);
+        function
+            .get_param_iter()
+            .enumerate()
+            .for_each(|(i, param)| {
+                // 每次入参赋上源码的参数名称
+                param.set_name(params[i].as_str());
+            });
 
         // 获取当前作用域
         let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
         // 将函数插入当前作用域的符号表
         scope.insert(func_name.as_str().to_string(), Type::Func(function));
         // 将函数更新为最近的活跃作用域
-        ir_session.scope_stack.push(ScopeKey::Ident(func_name.as_str().to_string()));
+        ir_session
+            .scope_stack
+            .push(ScopeKey::Ident(function));
 
         // 获取当前作用域
         let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
@@ -169,14 +190,20 @@ impl<'a> Scanner<'a> {
         // 光标移动到入口块末尾
         ir_session.builder.position_at_end(entry_block);
 
-        function.get_param_iter().enumerate().for_each(|(i,param)|{
-            // 每次入参赋上源码的参数名称
-            let t = params[i].as_str();
-            let temp = ir_session.builder.build_alloca(i32_type,t).unwrap();
-            temp.set_name(t);
-            scope.insert(param.get_name().to_str().unwrap().to_string(),Type::LocalVar(temp));
-            param.set_name(t);
-        });
+        function
+            .get_param_iter()
+            .enumerate()
+            .for_each(|(i, param)| {
+                // 每次入参赋上源码的参数名称
+                let t = params[i].as_str();
+                let temp = ir_session.builder.build_alloca(i32_type, t).unwrap();
+                temp.set_name(t);
+                scope.insert(
+                    param.get_name().to_str().unwrap().to_string(),
+                    Type::LocalVar(temp),
+                );
+                param.set_name(t);
+            });
 
         // dbg!(func_body.clone());
         // 开始解析函数体
@@ -187,7 +214,7 @@ impl<'a> Scanner<'a> {
                 block_items.push(item.clone());
             }
         }
-          // 开始处理函数体中的每一项
+        // 开始处理函数体中的每一项
         for block_item in block_items {
             let item_iter = Self::skip_in(block_item);
             for item in item_iter {
@@ -197,25 +224,24 @@ impl<'a> Scanner<'a> {
         ir_session.scope_stack.pop();
     }
 
-   
-    fn scan_block_item<'ctx>(&self,block_item: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+    fn scan_block_item<'ctx>(&self, block_item: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
         match block_item.as_rule() {
             Rule::Decl => {
-                todo!();
+                self.scan_decl(block_item,ir_session);
             }
             Rule::Stmt => {
                 let stmt_iter = Self::skip_in(block_item);
                 for stmt in stmt_iter {
                     dbg!(stmt.as_rule());
-                    self.scan_stmt(stmt, ir_session);
+                    self.scan_stmt(stmt, ir_session,None);
                 }
             }
-            _ => {},
+            _ => {}
         }
     }
 
     /// 扫描stmt
-    fn scan_stmt<'ctx>(&self,stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+    fn scan_stmt<'ctx>(&self, stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,from:Option<Pair<'_, Rule>>) {
         match stmt.as_rule() {
             Rule::AssignStmt => {
                 self.scan_assign_stmt(stmt, ir_session);
@@ -224,7 +250,7 @@ impl<'a> Scanner<'a> {
                 self.scan_exp_stmt(stmt, ir_session);
             }
             Rule::Block => {
-                self.scan_block(stmt, ir_session);
+                self.scan_block(stmt, ir_session,from);
             }
             Rule::IfStmt => {
                 self.scan_if_stmt(stmt, ir_session);
@@ -241,48 +267,50 @@ impl<'a> Scanner<'a> {
             Rule::ReturnStmt => {
                 self.scan_return_stmt(stmt, ir_session);
             }
-            _ => {},
+            _ => {}
         }
-    }       
-
-
-    /// 处理赋值语句
-    fn scan_assign_stmt<'ctx>(&self,assign_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
-        let mut assign_stmt_iter = Self::skip_in(assign_stmt);
-        let i32_type = ir_session.context.i32_type();
-        let l_val = assign_stmt_iter.next().unwrap();
-        // 读取符号表，获取已经分配好的内存地址名称
-        let l_val = self.scan_l_val(l_val, ir_session).unwrap();
-        let mut assign_stmt_iter = assign_stmt_iter.skip(1);
-        let exp = assign_stmt_iter.next().unwrap();
-        let temp_reg_name = self.scan_exp_stmt(exp, ir_session);
-
-        // 把寄存器中的表达式结果存储到内存
-
-        todo!();
     }
 
+    /// 处理赋值语句
+    fn scan_assign_stmt<'ctx>(
+        &self,
+        assign_stmt: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) {
+        let mut assign_stmt_iter = Self::skip_in(assign_stmt);
+        let l_val_exp = assign_stmt_iter.next().unwrap();
+        // 读取符号表，获取已经分配好的内存地址名称
+        let assign_for = Self::skip_in(l_val_exp).next().unwrap().as_str();
+        let mut assign_stmt_iter = assign_stmt_iter.skip(1);
+        let exp = assign_stmt_iter.next().unwrap();
+        let assign_val = self.scan_exp(exp, ir_session);
+        // 将新的值存储到左值地址不需要重新插入一个值
+        if let Some(val) = assign_val {
+            let ty = ir_session.scope_stack.get(assign_for).unwrap();
+            let ty_p = ty.get_val().unwrap();
+            let _ = ir_session.builder.build_store(*ty_p,val);
+        }
+    }
 
-    fn scan_l_val<'ctx>(&self,l_val: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>) -> Option<IntValue<'ctx>> {
+    fn scan_l_val<'ctx>(
+        &self,
+        l_val: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut l_val_iter = Self::skip_in(l_val);
         let ident = l_val_iter.next().unwrap();
-        let scope  = ir_session.scope_stack.get_current_scope_mut().unwrap();
-        let ty = scope.get(ident.as_str().to_string()).unwrap();
-        match (ty.is_local(),ty.is_global()) {
-            (true,false) => {
-                let p = ty.get_local().unwrap();
-                let val = ir_session.builder.build_load(*p,ident.as_str()).unwrap().into_int_value();
-                Some(val)
-            } ,
-            (false,true) => {
-                let g = ty.get_global().unwrap();
-                let p = g.as_pointer_value();
-                let val = ir_session.builder.build_load(p,ident.as_str()).unwrap().into_int_value();
-                Some(val)
-            }
-            _ => None
+        let ty = ir_session.scope_stack.get(ident.as_str()).unwrap();
+        if !ty.is_func() {
+            let g = ty.get_val().unwrap();
+            let val = ir_session
+                .builder
+                .build_load(*g, ident.as_str())
+                .unwrap()
+                .into_int_value();
+            Some(val)
+        }else {
+            panic!("Unexpected local ident {:?}", ident.as_str());
         }
-
     }
 
     /// 处理表达式语句
@@ -291,34 +319,84 @@ impl<'a> Scanner<'a> {
     /// 2、利用寄存器计算出结果后
     /// 3、把值从寄存器中取出写回到内存的变量中
     /// 需要返回临时寄存器名称，方便后续的赋值操作
-    fn scan_exp_stmt<'ctx>(&self,exp_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>)->String{
+    fn scan_exp_stmt<'ctx>(
+        &self,
+        exp_stmt: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut exp_stmt_iter = Self::skip_in(exp_stmt);
         let exp = exp_stmt_iter.next().unwrap();
-        self.scan_exp(exp, ir_session);
-        todo!();
+        self.scan_exp(exp, ir_session)
     }
 
     /// 处理语句块
-    fn scan_block<'ctx>(&self,block: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+    /// 根据是否有from来判断是否是任意的内部块
+    /// 比如：
+    /// ```
+    ///  {
+    ///    int a = 1;
+    ///  }
+    /// ```
+    fn scan_block<'ctx>(&self, block: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,from:Option<Pair<'_, Rule>>) {
         todo!();
     }
-    
-    /// 处理条件语句
-    fn scan_if_stmt<'ctx>(&self,if_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
-        todo!();
+
+   /// 处理条件语句
+    fn scan_if_stmt<'ctx>(&self, if_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+        let mut if_iter = Self::skip_in(if_stmt.clone());
+        let function = ir_session.scope_stack.get_current_scope_func_key().unwrap();
+        let if_true = ir_session.context.append_basic_block(function, "if_true");
+        let if_next = ir_session.context.append_basic_block(function, "if_next");
+        let mut if_iter = if_iter.skip(2);
+        let cond = if_iter.next().unwrap();
+        let cond_val = self.scan_cond(cond, ir_session).unwrap();
+        let from = Some(if_stmt);
+
+        if let Some(els) = if_iter.next() && els.as_rule() == Rule::Else {
+            let if_false = ir_session.context.append_basic_block(function, "if_false");
+            let _ = ir_session.builder.build_conditional_branch(cond_val, if_true, if_false);
+            let mut if_iter = if_iter.skip(1);
+            // 更新作用域为 if_true块
+            ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
+            ir_session.builder.position_at_end(if_true); // 光标移动到if_true块末端
+            let stmt = if_iter.next().unwrap();
+            self.scan_stmt(stmt, ir_session,from.clone());
+            ir_session.scope_stack.pop();
+
+            // 更新作用域为 if_false块
+            ir_session.scope_stack.push(ScopeKey::InnerBlock(if_false));
+            ir_session.builder.position_at_end(if_false);
+            let stmt = if_iter.next().unwrap();
+            self.scan_stmt(stmt, ir_session,from.clone());
+            ir_session.scope_stack.pop();
+        }else {
+            let _ = ir_session.builder.build_conditional_branch(cond_val, if_true, if_next);
+            let mut if_iter = if_iter.skip(1);
+            // 更新作用域为 if_true块
+            ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
+            ir_session.builder.position_at_end(if_true);  // 光标移动到if_true块末端
+            let stmt = if_iter.next().unwrap();
+            self.scan_stmt(stmt, ir_session,from);
+            ir_session.scope_stack.pop();
+        }
+       ir_session.scope_stack.push(ScopeKey::InnerBlock(if_next));
+       ir_session.builder.position_at_end(if_next);
     }
-    
+
     /// 处理循环语句
-    fn scan_while_stmt<'ctx>(&self,while_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+    fn scan_while_stmt<'ctx>(&self, while_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
         todo!();
     }
-    
+
     /// 处理返回语句
-    fn scan_return_stmt<'ctx>(&self,return_stmt: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
+    fn scan_return_stmt<'ctx>(
+        &self,
+        return_stmt: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) {
         let exp = Self::skip_in(return_stmt).skip(1).next().unwrap();
-        let i32_type = ir_session.context.i32_type();
         if exp.as_rule() != Rule::Exp {
-           let _ = ir_session.builder.build_return(None);
+            let _ = ir_session.builder.build_return(None);
             return;
         }
         // 处理exp 的计算结果，并根据结果构建返回值
@@ -326,64 +404,91 @@ impl<'a> Scanner<'a> {
         if result.is_some() {
             let val = result.unwrap();
             let _ = ir_session.builder.build_return(Some(&val));
-        }else {
+        } else {
             let _ = ir_session.builder.build_return(None);
         }
-    }   
+    }
 
     /// 处理表达式
-    fn scan_exp<'ctx>(&self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>>{
+    fn scan_exp<'ctx>(
+        &self,
+        exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut exp_iter = Self::skip_in(exp);
         let add_exp = exp_iter.next().unwrap();
         self.scan_add_exp(add_exp, ir_session)
     }
 
-    fn scan_add_exp<'ctx>(&self,add_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>>{
+    fn scan_add_exp<'ctx>(
+        &self,
+        add_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut add_exp_iter = Self::skip_in(add_exp);
         // 读取乘法表达式
         let mul_exp = add_exp_iter.next().unwrap();
-        let left_exp = self.scan_mul_exp(mul_exp, ir_session);
-        let op = add_exp_iter.next();
-        if op.is_some() {
-            // 读取另一个乘法表达式
-            let mul_exp_another = add_exp_iter.next().unwrap();
-            let right_exp = self.scan_mul_exp(mul_exp_another, ir_session);
-            if let Some(right) = right_exp && let Some(left) = left_exp {
-                match op.unwrap().as_rule() {
-                    Rule::Mod => {
-                        Some(ir_session.builder.build_int_signed_rem(left,right,"tmp").unwrap())
-                    }
-                    Rule::Div => {
-                        Some(ir_session.builder.build_int_signed_div(left,right,"tmp").unwrap())
-                    }
-                    Rule::Mul => {
-                        Some(ir_session.builder.build_int_mul(left,right,"tmp").unwrap())
-                    }
-                    _ => None
+        let mut left = self.scan_mul_exp(mul_exp, ir_session).unwrap();
+        while let Some(op) = add_exp_iter.next() {
+            if op.as_rule() != Rule::MulExp {
+                let right_exp = add_exp_iter.next().unwrap();
+                let right = self.scan_mul_exp(right_exp, ir_session).unwrap();
+                match op.as_rule() {
+                    Rule::Plus => {
+                        left = ir_session.builder.build_int_add(left, right, "add_tmp").unwrap();
+                    },
+                    Rule::Minus => {
+                        left = ir_session.builder.build_int_sub(left, right, "sub_tmp").unwrap();
+                    },
+                    _ => panic!("Unexpected AddExp rule {:?}", op.as_rule()),
                 }
-            }else {
-                None
             }
-        }else {
-           left_exp
         }
+        Some(left)
     }
 
     ///
-    fn scan_mul_exp<'ctx>(&self,mul_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>>{
+    fn scan_mul_exp<'ctx>(
+        &self,
+        mul_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut mul_iter = Self::skip_in(mul_exp);
         let unary_exp = mul_iter.next().unwrap();
-        self.scan_unary_exp(unary_exp, ir_session)
+        let mut left = self.scan_unary_exp(unary_exp, ir_session).unwrap();
+        while let Some(op) = mul_iter.next() {
+            if op.as_rule() != Rule::UnaryExp {
+                let right_exp = mul_iter.next().unwrap();
+                let right = self.scan_unary_exp(right_exp, ir_session).unwrap();
+                match op.as_rule() {
+                    Rule::Mul => {
+                        left = ir_session.builder.build_int_mul(left, right, "mul_tmp").unwrap();
+                    }
+                    Rule::Div => {
+                        left = ir_session.builder.build_int_signed_div(left, right, "div_tmp").unwrap();
+                    }
+                    Rule::Mod => {
+                        left = ir_session.builder.build_int_signed_rem(left, right, "mod_tmp").unwrap();
+                    }
+                    _ => panic!("Unexpected MulExp rule {:?}", op.as_rule()),
+                }
+            }
+        }
+        Some(left)
     }
 
-    fn scan_unary_exp<'ctx>(&self,exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>>{
+    fn scan_unary_exp<'ctx>(
+        &self,
+        exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut unary_exp_iter = Self::skip_in(exp);
         let unary_exp = unary_exp_iter.next().unwrap();
         match unary_exp.as_rule() {
             Rule::CallExp => self.scan_call_exp(unary_exp, ir_session),
             Rule::PrimaryExp => self.scan_primary_exp(unary_exp, ir_session),
             Rule::UnaryOpExp => self.scan_unary_op_exp(unary_exp, ir_session),
-            _ => None
+            _ => None,
         }
     }
 
@@ -391,19 +496,30 @@ impl<'a> Scanner<'a> {
     /// 1、从符号表拿到函数
     /// 2、读取参数
     /// 3、调用build_call构建LLVM_IR
-    fn scan_call_exp<'ctx>(&self,call_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
+    fn scan_call_exp<'ctx>(
+        &self,
+        call_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut call_exp_iter = Self::skip_in(call_exp);
         let call_name = call_exp_iter.next().unwrap().as_str();
         let params = call_exp_iter.skip(1).next().unwrap();
-        let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
-        let binding = scope.get(call_name.to_string()).unwrap();
-        let function = binding.get_function().unwrap();
+        let function = {
+            let binding = ir_session.scope_stack.get(call_name).unwrap();
+            binding.get_function().unwrap().clone()
+        };
         let mut result = None;
         if params.as_rule() != Rule::FuncRParams {
-            let r = ir_session.builder.build_call(function.clone(),&[],call_name).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+            let r = ir_session
+                .builder
+                .build_call(function, &[], call_name)
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_int_value();
             result = Some(r);
-
-        }else {
+        } else {
             let mut param_exps = Vec::<IntValue<'ctx>>::new();
             let params_iter = Self::skip_in(params);
             for param in params_iter {
@@ -412,38 +528,57 @@ impl<'a> Scanner<'a> {
                     param_exps.push(val);
                 }
             }
-            let r = ir_session.builder.build_call(function.clone(),&[],call_name).unwrap().try_as_basic_value().left().unwrap().into_int_value();
+            let r = ir_session
+                .builder
+                .build_call(function, &[], call_name)
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_int_value();
             result = Some(r);
         }
         if function.get_type().get_return_type().is_none() {
             None
-        }else {
+        } else {
             result
         }
     }
 
-    fn scan_primary_exp<'ctx>(&self,primary_exp: Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
+    fn scan_primary_exp<'ctx>(
+        &self,
+        primary_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut prim_exp_iter = Self::skip_in(primary_exp);
         let inner = prim_exp_iter.next().unwrap();
         match inner.as_rule() {
-            Rule::LVal => self.scan_l_val(inner,ir_session),
-            Rule::Number => self.scan_number(inner,ir_session),
+            Rule::LVal => self.scan_l_val(inner, ir_session),
+            Rule::Number => self.scan_number(inner, ir_session),
             Rule::OpenParen => {
                 let exp = prim_exp_iter.next().unwrap();
-                self.scan_exp(exp,ir_session)
+                self.scan_exp(exp, ir_session)
             }
-            _ => None
+            _ => None,
         }
     }
 
-    fn scan_number<'ctx>(&self,number:Pair<'_,Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
+    fn scan_number<'ctx>(
+        &self,
+        number: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let number = number.as_str().parse::<u64>().unwrap();
         let i32_type = ir_session.context.i32_type();
-        let result = i32_type.const_int(number,false);
+        let result = i32_type.const_int(number, false);
         Some(result)
     }
 
-    fn scan_unary_op_exp<'ctx>(&self,unary_op_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
+    fn scan_unary_op_exp<'ctx>(
+        &self,
+        unary_op_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut unary_op_exp_iter = Self::skip_in(unary_op_exp);
         let unary_op = unary_op_exp_iter.next().unwrap();
         let op = Self::skip_in(unary_op).next().unwrap();
@@ -452,53 +587,143 @@ impl<'a> Scanner<'a> {
         let i32_type = ir_session.context.i32_type();
         match op.as_rule() {
             Rule::Not => {
-                let cmp = ir_session.builder.build_int_compare(IntPredicate::EQ,unary_exp_val,i32_type.const_int(0,false),"cmp").unwrap();
-                let res = ir_session.builder.build_int_z_extend(cmp,i32_type,"not");
+                let cmp = ir_session
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        unary_exp_val,
+                        i32_type.const_int(0, false),
+                        "cmp",
+                    )
+                    .unwrap();
+                let res = ir_session.builder.build_int_z_extend(cmp, i32_type, "not");
                 Some(res.unwrap().as_basic_value_enum().into_int_value())
-            },
+            }
             Rule::Minus => {
-                let neg = ir_session.builder.build_int_neg(unary_exp_val,"neg");
+                let neg = ir_session.builder.build_int_neg(unary_exp_val, "neg");
                 Some(neg.unwrap().as_basic_value_enum().into_int_value())
-            },
+            }
             Rule::Plus => Some(unary_exp_val),
-            _=> None
+            _ => None,
         }
     }
 
-    fn scan_cond<'ctx>(&self,cond_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>){
+    fn scan_cond<'ctx>(
+        &self,
+        cond_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
         let mut cond_exp_iter = Self::skip_in(cond_exp);
         let l_or_exp = cond_exp_iter.next().unwrap();
-        let l_or_exp = self.scan_l_or_exp(l_or_exp, ir_session).unwrap();
-        // 1、添加条件块
-        let parent = ir_session.builder.get_insert_block().unwrap().get_parent().unwrap();
-        let true_bb = ir_session.context.append_basic_block(parent, "or_true");
-        let false_bb = ir_session.context.append_basic_block(parent, "or_false");
-        let next_bb = ir_session.context.append_basic_block(parent, "or_next");
+        self.scan_l_or_exp(l_or_exp, ir_session)
     }
 
-    fn scan_l_or_exp<'ctx>(&self,l_or_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
-        let mut l_or_exp_iter = Self::skip_in(l_or_exp);
-        let mut l_or_exps = Vec::<IntValue<'ctx>>::new();
+    fn scan_l_or_exp<'ctx>(
+        &self,
+        l_or_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let l_or_exp_iter = Self::skip_in(l_or_exp);
+        let bool_type = ir_session.context.bool_type();
+        let mut flag = bool_type.const_int(1, false);
         for e in l_or_exp_iter {
             if e.as_rule() == Rule::LAndExp {
-                l_or_exps.push(self.scan_l_or_exp(e, ir_session).unwrap());
+                let res = self.scan_l_and_exp(e, ir_session).unwrap();
+                flag = ir_session.builder.build_or(flag,res,"or_tmp").unwrap();
             }
         }
-        let zero = ir_session.context.i32_type().const_int(0,false);
-        // 只要有一个为真则总体为真
-        let flag = l_or_exps.iter().find(|e|{
-            e.eq(&zero)
-        });
-        if flag.is_some() {
-            let result = *flag.unwrap();
-            Some(result)
-        }else {
-            Some(zero)
-        }
+        Some(flag)
     }
-    
-    fn scan_l_and_exp<'ctx>(&self,l_and_exp:Pair<'_, Rule>,ir_session: &mut IrSession<'ctx>)->Option<IntValue<'ctx>> {
-        todo!()
+
+    fn scan_l_and_exp<'ctx>(
+        &self,
+        l_and_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let l_and_exp_iter = Self::skip_in(l_and_exp);
+        let bool_type = ir_session.context.bool_type();
+        let mut flag = bool_type.const_int(1, false);
+        for e in l_and_exp_iter {
+            if e.as_rule() == Rule::EqExp {
+                let res = self.scan_eq_exp(e, ir_session).unwrap();
+                flag = ir_session.builder.build_and(flag,res,"and_tmp").unwrap();
+            }
+        }
+        Some(flag)
+    }
+
+    fn scan_eq_exp<'ctx>(
+        &self,
+        eq_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut eq_exp_iter = Self::skip_in(eq_exp);
+        let bool_type = ir_session.context.bool_type();
+        let mut flag = bool_type.const_int(1, false);
+        let rel_exp = eq_exp_iter.next().unwrap();
+        let mut left = self.scan_rel_exp(rel_exp, ir_session);
+        while let Some(e) = eq_exp_iter.next() {
+            if e.as_rule() != Rule::RelExp {
+                let right_rel = eq_exp_iter.next().unwrap();
+                let right = self.scan_rel_exp(right_rel, ir_session);
+                if let Some(lt) = left && let Some(rt) = right {
+                    if e.as_rule() == Rule::Equal {
+                        let cmp = ir_session.builder.build_int_compare(EQ,lt,rt,"eq_tmp").unwrap();
+                        flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                    } else {
+                        let cmp = ir_session.builder.build_int_compare(NE,lt,rt,"ne_tmp").unwrap();
+                        flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                    }
+                }
+            }
+        }
+        Some(flag)
+    }
+
+    fn scan_rel_exp<'ctx>(
+        &self,
+        rel_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut rel_exp_iter = Self::skip_in(rel_exp);
+        let bool_type = ir_session.context.bool_type();
+        let mut flag = bool_type.const_int(1, false);
+        let add_exp = rel_exp_iter.next().unwrap();
+        let mut left = self.scan_add_exp(add_exp, ir_session);
+        while let Some(e) = rel_exp_iter.next() {
+            if e.as_rule() != Rule::AddExp {
+                let right_add = rel_exp_iter.next().unwrap();
+                let right = self.scan_add_exp(right_add, ir_session);
+                match e.as_rule() {
+                    Rule::LessEqual => {
+                        if let Some(lt) = left && let Some(rt) = right {
+                            let cmp = ir_session.builder.build_int_compare(SLE,lt,rt, "cmp").unwrap();
+                            flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                        }
+                    },
+                    Rule::GreaterEqual => {
+                        if let Some(lt) = left && let Some(rt) = right {
+                            let cmp = ir_session.builder.build_int_compare(SGE,lt,rt, "cmp").unwrap();
+                            flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                        }
+                    },
+                    Rule::Less => {
+                        if let Some(lt) = left && let Some(rt) = right {
+                            let cmp = ir_session.builder.build_int_compare(SLT,lt,rt, "cmp").unwrap();
+                            flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                        }
+                    },
+                    Rule::Greater => {
+                        if let Some(lt) = left && let Some(rt) = right {
+                            let cmp = ir_session.builder.build_int_compare(SGT,lt,rt, "cmp").unwrap();
+                            flag = ir_session.builder.build_and(flag,cmp,"and_tmp").unwrap();
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+        Some(flag)
     }
 
     /// 收集函数入参
@@ -517,7 +742,10 @@ impl<'a> Scanner<'a> {
     }
 
     /// 根据返回类型构建函数的IR基础返回类型
-    fn build_fn_ret_type<'ctx>(func_type: &Pair<'_, Rule>, context: &'ctx Context) -> (Option<IntType<'ctx>>, Option<VoidType<'ctx>>) {
+    fn build_fn_ret_type<'ctx>(
+        func_type: &Pair<'_, Rule>,
+        context: &'ctx Context,
+    ) -> (Option<IntType<'ctx>>, Option<VoidType<'ctx>>) {
         if func_type.as_rule() == Rule::Int {
             (Some(context.i32_type()), None)
         } else {
@@ -529,7 +757,6 @@ impl<'a> Scanner<'a> {
     fn skip_in(pair: Pair<Rule>) -> impl Iterator<Item = Pair<Rule>> {
         pair.into_inner().into_iter()
     }
-
 }
 
 #[derive(Debug)]
@@ -540,17 +767,17 @@ pub struct IrCore {
 impl IrCore {
     pub fn new() -> IrCore {
         Self {
-            context:Context::create()
+            context: Context::create(),
         }
     }
     pub fn start_session(&self, module_name: &str) -> IrSession {
         let module = self.context.create_module(module_name);
         let builder = self.context.create_builder();
         IrSession {
-            context : &self.context,
+            context: &self.context,
             module,
             builder,
-            scope_stack:ScopeStack::default(),
+            scope_stack: ScopeStack::default(),
         }
     }
 }
@@ -560,29 +787,29 @@ pub struct IrSession<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
-    pub scope_stack: ScopeStack<'ctx>
+    pub scope_stack: ScopeStack<'ctx>,
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub enum ScopeKey {
-    Global, // 全局作用域
-    Ident(String), // 函数作用域
-    InnerBlock, // 块级作用域
+pub enum ScopeKey<'ctx> {
+    Global,        // 全局作用域
+    Ident(FunctionValue<'ctx>), // 函数作用域
+    InnerBlock(BasicBlock<'ctx>),    // 块级作用域
 }
 
 /// 作用域栈
 #[derive(Debug)]
 pub struct ScopeStack<'ctx> {
     /// 作用域栈
-    stack: Vec<ScopeKey>,
+    stack: Vec<ScopeKey<'ctx>>,
     /// 当前作用域的符号表
-    scopes: HashMap<ScopeKey,Scope<'ctx>>,
+    scopes: HashMap<ScopeKey<'ctx>, Scope<'ctx>>,
 }
 
 #[allow(E0621)]
-impl <'ctx> ScopeStack<'ctx> {
+impl<'ctx> ScopeStack<'ctx> {
     /// 压入作用域
-    pub fn push(&mut self, key: ScopeKey) {
+    pub fn push(&mut self, key: ScopeKey<'ctx>) {
         self.stack.push(key.clone());
         self.scopes.insert(key, Default::default());
     }
@@ -593,17 +820,17 @@ impl <'ctx> ScopeStack<'ctx> {
         self.scopes.remove(&key);
     }
 
-    pub fn update(&mut self, key: ScopeKey,scope: Scope<'ctx>) {
+    pub fn update(&mut self, key: ScopeKey<'ctx>, scope: Scope<'ctx>) {
         self.scopes.insert(key, scope);
     }
 
     /// 获取作用域
-    fn get_scope(&self, key: &ScopeKey) -> Option<&Scope> {
+    fn get_scope(&self, key: &ScopeKey<'ctx>) -> Option<&Scope<'ctx>> {
         self.scopes.get(key)
     }
 
     /// 获取可变的作用域
-    fn get_scope_mut(&mut self, key: &ScopeKey) -> Option<&mut Scope<'ctx>> {
+    fn get_scope_mut(&mut self, key: &ScopeKey<'ctx>) -> Option<&mut Scope<'ctx>> {
         self.scopes.get_mut(key)
     }
 
@@ -619,7 +846,7 @@ impl <'ctx> ScopeStack<'ctx> {
         self.get_scope_mut(&last_key)
     }
 
-    pub fn get_current_scope_key(&self) -> Option<String> {
+    pub fn get_current_scope_func_key(&self) -> Option<FunctionValue<'ctx>> {
         let last_key = self.stack.last().cloned()?;
         match last_key {
             ScopeKey::Ident(name) => Some(name),
@@ -639,10 +866,11 @@ impl <'ctx> ScopeStack<'ctx> {
     }
 
     /// 根据名称从最近的活跃作用域中符号表中抽取一个符号
-    pub fn get(&self, name: &str) -> Option<Type> {
+    pub fn get(&self, name: &str) -> Option<&Type<'ctx>> {
         for scope_key in self.stack.iter().rev() {
-            let scope = self.get_scope(scope_key).unwrap();
-            if let Some(symbol) = scope.get(name.to_string()) {
+            if let Some(scope) = self.get_scope(scope_key)
+                && let Some(symbol) = scope.get(name.to_string())
+            {
                 return Some(symbol);
             }
         }
@@ -670,7 +898,6 @@ pub struct Scope<'ctx> {
     pub symbol_table: HashMap<String, Type<'ctx>>,
 }
 
-
 impl<'ctx> Default for Scope<'ctx> {
     fn default() -> Self {
         Scope {
@@ -679,8 +906,7 @@ impl<'ctx> Default for Scope<'ctx> {
     }
 }
 
-impl <'ctx> Scope <'ctx> {
-
+impl<'ctx> Scope<'ctx> {
     fn insert(&mut self, key: String, value: Type<'ctx>) {
         self.symbol_table.insert(key, value);
     }
@@ -689,20 +915,20 @@ impl <'ctx> Scope <'ctx> {
         self.symbol_table.contains_key(&key)
     }
 
-    fn get(&self, key: String) -> Option<Type<'ctx>> {
-        self.symbol_table.get(&key).cloned()
+    fn get(&self, key: String) -> Option<&Type<'ctx>> {
+        self.symbol_table.get(&key)
     }
 }
 
 /// 枚举类型
 #[derive(Debug, Clone)]
 pub enum Type<'ctx> {
-    GlobalVar(GlobalValue<'ctx>),
+    GlobalVar(PointerValue<'ctx>),
     Func(FunctionValue<'ctx>), //函数信息只需要管返回类型，其他信息会放在符号表中管理。参数作为作用域的临时变量
     LocalVar(PointerValue<'ctx>), // 本地变量分配的空间,包括函数参数
 }
 
-impl <'ctx> Type <'ctx> {
+impl<'ctx> Type<'ctx> {
     /// 读取整形值
     pub fn is_func(&self) -> bool {
         match self {
@@ -725,18 +951,12 @@ impl <'ctx> Type <'ctx> {
         }
     }
 
-    pub fn get_local(&self) -> Option<&PointerValue<'ctx>> {
-        if let Type::LocalVar(v) = self {
-            return Some(v);
+    pub fn get_val(&self) -> Option<&PointerValue<'ctx>> {
+        match self {
+            Type::GlobalVar(v) => Some(v),
+            Type::LocalVar(v) => Some(v),
+            _ => None,
         }
-        None
-    }
-
-    pub fn get_global(&self) -> Option<&GlobalValue<'ctx>> {
-        if let Type::GlobalVar(v) = self {
-            return Some(v);
-        }
-        None
     }
 
     pub fn get_function(&self) -> Option<&FunctionValue<'ctx>> {
@@ -745,19 +965,17 @@ impl <'ctx> Type <'ctx> {
         }
         None
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::gen_llvm_ir::{Scanner, Rule, parse_file};
+    use crate::gen_llvm_ir::{Rule, Scanner, parse_file};
+    use inkwell::context::Context;
     use pest::iterators::Pair;
     use std::io::stdout;
-    use inkwell::context::Context;
 
     const FILE_PATH: &str = "tests/lab5/";
 
-    
     #[test]
     fn test_scan() {
         let file_path = format!("{}{}", FILE_PATH, "example01.sy");
@@ -767,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn test_llvm_fn(){
+    fn test_llvm_fn() {
         let context = Context::create();
         let module = context.create_module("main");
         let builder = context.create_builder();
@@ -779,12 +997,12 @@ mod tests {
         // 函数参数处理
         let a = function.get_first_param().unwrap().into_int_value();
         let b = function.get_nth_param(1).unwrap().into_int_value();
-        let sum =builder.build_int_add(a, b, "sum").unwrap();
+        let sum = builder.build_int_add(a, b, "sum").unwrap();
 
         // 定义变量
-        let c = builder.build_alloca(i32_type,"c").unwrap();
-        let init_val = i32_type.const_int(1,false);
-        let _ = builder.build_store(c,init_val);
+        let c = builder.build_alloca(i32_type, "c").unwrap();
+        let init_val = i32_type.const_int(1, false);
+        let _ = builder.build_store(c, init_val);
         // 变量赋值
 
         let _ = builder.build_return(Some(&sum));
