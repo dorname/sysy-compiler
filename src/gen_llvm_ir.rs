@@ -122,11 +122,109 @@ impl<'a> Scanner<'a> {
     }
 
     fn scan_const_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        todo!()
+        let mut const_decl_iter = Self::skip_in(pair);
+        let mut const_decls = Vec::<Pair<'_,Rule>>::new();
+        for decl in const_decl_iter {
+            if decl.as_rule() == Rule::ConstDef {
+                const_decls.push(decl);
+            }
+        }
+        for decl in const_decls {
+            self.scan_const_decl(decl, ir_session);
+        }
+    }
+
+    fn scan_const_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+        let mut const_def_iter = Self::skip_in(pair);
+        let ident = const_def_iter.next().unwrap();
+        let i32_type = ir_session.context.i32_type();
+        let key = ir_session.scope_stack.get_last_key().unwrap();
+        for decl in const_def_iter {
+            if decl.as_rule() == Rule::ConstInitVal {
+                let const_init = self.scan_const_init(decl, ir_session).unwrap();
+                // 分配空间
+                if key.is_global() {
+                    let val = ir_session.module.add_global(i32_type,None,ident.as_str());
+                    // 初始化
+                    val.set_initializer(&const_init);
+                    val.set_constant(true);
+                    // 加入符号表
+                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    scope.insert(ident.as_str().to_string(),Type::GlobalVar(val.as_pointer_value()));
+                }else {
+                    let val = ir_session.builder.build_alloca(i32_type,ident.as_str()).unwrap();
+                    // 存储到val中
+                    let _ = ir_session.builder.build_store(val, const_init);
+                    // 加入符号表
+                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    scope.insert(ident.as_str().to_string(),Type::LocalVar(val));
+                }
+            }
+        }
+    }
+
+    fn scan_const_init<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Option<IntValue<'ctx>>{
+        // 本次实验不处理数组
+        let mut const_init_iter = Self::skip_in(pair);
+        for const_exp in const_init_iter {
+            if const_exp.as_rule() == Rule::ConstExp {
+                let add_exp = const_exp.into_inner().next().unwrap();
+                return  self.scan_add_exp(add_exp, ir_session);
+            }
+        }
+        panic!("error const_init_val");
     }
 
     fn scan_var_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        todo!()
+        let mut var_decl_iter = Self::skip_in(pair);
+        let mut var_defs = Vec::<Pair<'_,Rule>>::new();
+        for rule in var_decl_iter {
+            if rule.as_rule() == Rule::VarDef {
+                var_defs.push(rule);
+            }
+        }
+        for def in var_defs {
+            self.scan_var_def(def, ir_session);
+        }
+    }
+
+    fn scan_var_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>){
+        let mut var_def_iter = Self::skip_in(pair);
+        let ident = var_def_iter.next().unwrap();
+        let i32_type = ir_session.context.i32_type();
+        let key = ir_session.scope_stack.get_last_key().unwrap();
+        for def in var_def_iter {
+            if def.as_rule() == Rule::InitVal {
+                let const_init = self.scan_init_val(def, ir_session).unwrap();
+                // 分配空间
+                if key.is_global() {
+                    let val = ir_session.module.add_global(i32_type,None,ident.as_str());
+                    // 初始化
+                    val.set_initializer(&const_init);
+                    // 加入符号表
+                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    scope.insert(ident.as_str().to_string(),Type::GlobalVar(val.as_pointer_value()));
+                }else {
+                    let val = ir_session.builder.build_alloca(i32_type,ident.as_str()).unwrap();
+                    // 存储到val中
+                    let _ = ir_session.builder.build_store(val, const_init);
+                    // 加入符号表
+                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    scope.insert(ident.as_str().to_string(),Type::LocalVar(val));
+                }
+            }
+        }
+    }
+
+    fn scan_init_val<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>)-> Option<IntValue<'ctx>> {
+        // 本次实验不处理数组
+        let mut var_init_iter = Self::skip_in(pair);
+        for exp in var_init_iter {
+            if exp.as_rule() == Rule::Exp {
+                return  self.scan_exp(exp, ir_session);
+            }
+        }
+        panic!("error init_val");
     }
 
 
@@ -859,6 +957,15 @@ pub enum ScopeKey<'ctx> {
     InnerBlock(BasicBlock<'ctx>),    // 块级作用域
 }
 
+impl<'ctx>ScopeKey<'ctx>{
+    fn is_global(&self) -> bool {
+        if let ScopeKey::Global = self {
+            return true;
+        }
+        false
+    }
+}
+
 /// 作用域栈
 #[derive(Debug)]
 pub struct ScopeStack<'ctx> {
@@ -937,6 +1044,10 @@ impl<'ctx> ScopeStack<'ctx> {
             }
         }
         None
+    }
+
+    fn get_last_key(&self) -> Option<ScopeKey<'ctx>> {
+        self.stack.last().cloned()
     }
 }
 
