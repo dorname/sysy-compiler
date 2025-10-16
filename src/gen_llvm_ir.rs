@@ -205,7 +205,6 @@ impl<'a> Scanner<'a> {
                 param.set_name(t);
             });
 
-        // dbg!(func_body.clone());
         // 开始解析函数体
         let mut block_items = Vec::<Pair<'_, Rule>>::new();
         let mut block_item_iter = Self::skip_in(func_body.unwrap());
@@ -233,7 +232,7 @@ impl<'a> Scanner<'a> {
                 let stmt_iter = Self::skip_in(block_item);
                 for stmt in stmt_iter {
                     dbg!(stmt.as_rule());
-                    self.scan_stmt(stmt, ir_session,None);
+                    self.scan_stmt(stmt, ir_session,false);
                 }
             }
             _ => {}
@@ -241,7 +240,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// 扫描stmt
-    fn scan_stmt<'ctx>(&self, stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,from:Option<Pair<'_, Rule>>) {
+    fn scan_stmt<'ctx>(&self, stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,no_inner:bool) {
         match stmt.as_rule() {
             Rule::AssignStmt => {
                 self.scan_assign_stmt(stmt, ir_session);
@@ -250,19 +249,13 @@ impl<'a> Scanner<'a> {
                 self.scan_exp_stmt(stmt, ir_session);
             }
             Rule::Block => {
-                self.scan_block(stmt, ir_session,from);
+                self.scan_block(stmt,ir_session,no_inner,true)
             }
             Rule::IfStmt => {
                 self.scan_if_stmt(stmt, ir_session);
             }
             Rule::WhileStmt => {
                 self.scan_while_stmt(stmt, ir_session);
-            }
-            Rule::BreakStmt => {
-                todo!();
-            }
-            Rule::ContinueStmt => {
-                todo!();
             }
             Rule::ReturnStmt => {
                 self.scan_return_stmt(stmt, ir_session);
@@ -337,8 +330,20 @@ impl<'a> Scanner<'a> {
     ///    int a = 1;
     ///  }
     /// ```
-    fn scan_block<'ctx>(&self, block: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,from:Option<Pair<'_, Rule>>) {
-        todo!();
+    fn scan_block<'ctx>(&self, block: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>,no_inner: bool,is_pop:bool) {
+        // 当no_inner为true 不是需要创建新块并添加进入作用域
+        if no_inner {
+            let mut block_item_iter = Self::skip_in(block);
+            for block_item in block_item_iter {
+                self.scan_block_item(block_item, ir_session);
+            }
+        }else {
+            todo!("处理任意的内部块")
+        }
+        if is_pop {
+            // 对于处理完的块，推出if_next块
+            ir_session.scope_stack.pop();
+        }
     }
 
    /// 处理条件语句
@@ -350,7 +355,6 @@ impl<'a> Scanner<'a> {
         let mut if_iter = if_iter.skip(2);
         let cond = if_iter.next().unwrap();
         let cond_val = self.scan_cond(cond, ir_session).unwrap();
-        let from = Some(if_stmt);
 
         if let Some(els) = if_iter.next() && els.as_rule() == Rule::Else {
             let if_false = ir_session.context.append_basic_block(function, "if_false");
@@ -360,14 +364,14 @@ impl<'a> Scanner<'a> {
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
             ir_session.builder.position_at_end(if_true); // 光标移动到if_true块末端
             let stmt = if_iter.next().unwrap();
-            self.scan_stmt(stmt, ir_session,from.clone());
+            self.scan_stmt(stmt, ir_session,true);
             ir_session.scope_stack.pop();
 
             // 更新作用域为 if_false块
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_false));
             ir_session.builder.position_at_end(if_false);
             let stmt = if_iter.next().unwrap();
-            self.scan_stmt(stmt, ir_session,from.clone());
+            self.scan_stmt(stmt, ir_session,true);
             ir_session.scope_stack.pop();
         }else {
             let _ = ir_session.builder.build_conditional_branch(cond_val, if_true, if_next);
@@ -376,7 +380,7 @@ impl<'a> Scanner<'a> {
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
             ir_session.builder.position_at_end(if_true);  // 光标移动到if_true块末端
             let stmt = if_iter.next().unwrap();
-            self.scan_stmt(stmt, ir_session,from);
+            self.scan_stmt(stmt, ir_session,true);
             ir_session.scope_stack.pop();
         }
        ir_session.scope_stack.push(ScopeKey::InnerBlock(if_next));
@@ -385,7 +389,65 @@ impl<'a> Scanner<'a> {
 
     /// 处理循环语句
     fn scan_while_stmt<'ctx>(&self, while_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        todo!();
+        let mut while_iter = Self::skip_in(while_stmt);
+        let function = ir_session.scope_stack.get_current_scope_func_key().unwrap();
+        let mut while_iter = while_iter.skip(2);
+        let cond = while_iter.next().unwrap();
+        let cond_val = self.scan_cond(cond, ir_session).unwrap();
+        let while_cond = ir_session.context.append_basic_block(function, "whileCond");
+        let while_body = ir_session.context.append_basic_block(function, "whileBody");
+        let while_next = ir_session.context.append_basic_block(function, "whileNext");
+        let _ = ir_session.builder.build_unconditional_branch(while_cond);
+        // 定位到条件块
+        ir_session.builder.position_at_end(while_cond);
+        // while条件块入栈
+        ir_session.scope_stack.push(ScopeKey::InnerBlock(while_cond));
+        // 构建分支
+        let _ = ir_session.builder.build_conditional_branch(cond_val, while_body, while_next);
+        // 出栈
+        ir_session.scope_stack.pop();
+
+        // 定位到函数体
+        ir_session.builder.position_at_end(while_body);
+        // 循环体入栈
+        ir_session.scope_stack.push(ScopeKey::InnerBlock(while_body));
+        let mut while_iter = while_iter.skip(1);
+        let stmt = while_iter.next().unwrap();
+        let mut stmt_iter = Self::skip_in(stmt);
+        for s in stmt_iter  {
+            match s.as_rule() {
+                Rule::AssignStmt => {
+                    self.scan_assign_stmt(s, ir_session);
+                },
+                Rule::ExpStmt => {
+                    self.scan_exp_stmt(s, ir_session);
+                }
+                Rule::IfStmt => {
+                    self.scan_if_stmt(s, ir_session);
+                }
+                Rule::WhileStmt => {
+                    self.scan_while_stmt(s, ir_session);
+                }
+                Rule::Block => {
+                    self.scan_block(s, ir_session, true,false);
+                }
+                Rule::ContinueStmt => {
+                   let _ =  ir_session.builder.build_unconditional_branch(while_cond);
+                }
+                Rule::BreakStmt => {
+                    let _ =  ir_session.builder.build_unconditional_branch(while_next);
+                }
+                Rule::ReturnStmt => {
+                    self.scan_return_stmt(s, ir_session);
+                }
+                _ => {}
+            }
+        }
+        // 函数体出栈
+        ir_session.scope_stack.pop();
+
+        // 定位到循环体外
+        ir_session.builder.position_at_end(while_next);
     }
 
     /// 处理返回语句
