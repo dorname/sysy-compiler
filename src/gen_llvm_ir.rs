@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{self, Write};
+use std::process::Output;
 use std::thread::scope;
 
 #[derive(Parser)]
@@ -55,6 +56,7 @@ fn parse_file(input: &str) -> Option<Pairs<'_, Rule>> {
 pub struct Scanner<'a> {
     /// 输入源代码
     input: &'a str,
+    output: &'a str,
     ir_core: IrCore,
 }
 
@@ -64,9 +66,10 @@ impl<'a> Scanner<'a> {
     /// # 参数
     /// * `input` - 要分析的源代码
     /// * `writer` - 错误消息的输出写入器
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: &'a str,output: &'a str) -> Self {
         Scanner {
             input,
+            output,
             ir_core: IrCore::new(),
         }
     }
@@ -1277,16 +1280,18 @@ mod tests {
     #[test]
     fn test_scan() {
         let file_path = format!("{}{}", FILE_PATH, "normaltest2.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest2_out.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
-        let scanner = Scanner::new(&input);
+        let scanner = Scanner::new(&input,&out_path);
         scanner.scan_collect();
     }
 
     #[test]
     fn test_example07() {
         let file_path = format!("{}{}", FILE_PATH, "example07.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example07_out.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
-        let scanner = Scanner::new(&input);
+        let scanner = Scanner::new(&input,&out_path);
         scanner.scan_collect();
     }
 

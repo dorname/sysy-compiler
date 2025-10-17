@@ -23,8 +23,12 @@ fn main() {
     // 获取文件名
     let filename = &args[1];
 
+    // 获取输出文件名
+    let output = &args[2];
+
     // 读取输入文件
     let input = fs::read_to_string(filename).expect("Failed to read file");
+    let scanner = Scanner::new(&input,output);
+    scanner.scan_collect();
 
-    let mut binding = stderr();
 }
