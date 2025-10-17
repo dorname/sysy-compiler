@@ -90,7 +90,7 @@ impl<'a> Scanner<'a> {
                 self.scan_declaration(declaration, &mut ir_session);
             }
             // 输出IR
-            ir_session.module.print_to_file("output.ll").unwrap();
+            ir_session.module.print_to_file(self.output).unwrap();
         }
     }
 
