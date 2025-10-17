@@ -1284,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_example01() {
+    fn test_example07() {
         let file_path = format!("{}{}", FILE_PATH, "example07.sy");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input);
