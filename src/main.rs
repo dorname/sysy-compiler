@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-mod check;
 mod utils;
 mod gen_llvm_ir;
 

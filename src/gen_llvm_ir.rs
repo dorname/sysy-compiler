@@ -312,7 +312,7 @@ impl<'a> Scanner<'a> {
                 temp.set_name(t);
                 let _ = ir_session.builder.build_store(temp, param);
                 scope.insert(
-                    param.get_name().to_str().unwrap().to_string(),
+                    t.to_string(),
                     Type::LocalVar(temp),
                 );
                 param.set_name(t);
@@ -331,6 +331,12 @@ impl<'a> Scanner<'a> {
             let item_iter = Self::skip_in(block_item);
             for item in item_iter {
                 self.scan_block_item(item, ir_session,None,None);
+            }
+        }
+
+        if let Some(bb) = ir_session.builder.get_insert_block() {
+            if !bb.get_terminator().is_some() {
+                ir_session.builder.build_return(None).unwrap();
             }
         }
         ir_session.scope_stack.pop();
@@ -373,7 +379,7 @@ impl<'a> Scanner<'a> {
             Rule::ExpStmt => {
                 self.scan_exp_stmt(stmt, ir_session);
             }
-            Rule::Block => self.scan_block(stmt, ir_session, no_inner, true, cond_blk, next_blk),
+            Rule::Block => self.scan_block(stmt, ir_session, no_inner, cond_blk, next_blk),
             Rule::IfStmt => {
                 self.scan_if_stmt(stmt, ir_session, cond_blk, next_blk);
             }
@@ -382,6 +388,16 @@ impl<'a> Scanner<'a> {
             }
             Rule::ReturnStmt => {
                 self.scan_return_stmt(stmt, ir_session);
+            }
+            Rule::ContinueStmt => {
+                if let Some(cond) = cond_blk {
+                    let _ = ir_session.builder.build_unconditional_branch(cond);
+                }
+            }
+            Rule::BreakStmt => {
+                if let Some(nxt) = next_blk {
+                    let _ = ir_session.builder.build_unconditional_branch(nxt);
+                }
             }
             _ => {}
         }
@@ -415,6 +431,12 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut l_val_iter = Self::skip_in(l_val);
         let ident = l_val_iter.next().unwrap();
+        let re = ir_session.scope_stack.get(ident.as_str());
+        if re.is_none() {
+            dbg!(ident.as_str());
+            dbg!(&ir_session.scope_stack.get_last_key());
+            dbg!(&ir_session.scope_stack);
+        }
         let ty = ir_session.scope_stack.get(ident.as_str()).unwrap();
         if !ty.is_func() {
             let g = ty.get_val().unwrap();
@@ -458,7 +480,6 @@ impl<'a> Scanner<'a> {
         block: Pair<'_, Rule>,
         ir_session: &mut IrSession<'ctx>,
         no_inner: bool,
-        is_pop: bool,
         cond_blk: Option<BasicBlock<'ctx>>,
         next_blk: Option<BasicBlock<'ctx>>,
     ) {
@@ -473,10 +494,6 @@ impl<'a> Scanner<'a> {
             }
         } else {
             todo!("处理任意的内部块")
-        }
-        if is_pop {
-            // 对于处理完的块，推出if_next块
-            ir_session.scope_stack.pop();
         }
     }
 
@@ -556,7 +573,7 @@ impl<'a> Scanner<'a> {
             }
             ir_session.scope_stack.pop();
         }
-        ir_session.scope_stack.push(ScopeKey::InnerBlock(if_next));
+        // ir_session.scope_stack.push(ScopeKey::InnerBlock(if_next)); if_next 实际上回到了函数体所以实际上不需要入栈因为它的作用域和函数体是一样
         ir_session.builder.position_at_end(if_next);
         if let Some(c) = cond_blk {
             let _ = ir_session.builder.build_unconditional_branch(c);
@@ -605,40 +622,7 @@ impl<'a> Scanner<'a> {
         let stmt = while_iter.next().unwrap();
         let mut stmt_iter = Self::skip_in(stmt);
         for s in stmt_iter {
-            match s.as_rule() {
-                Rule::AssignStmt => {
-                    self.scan_assign_stmt(s, ir_session);
-                }
-                Rule::ExpStmt => {
-                    self.scan_exp_stmt(s, ir_session);
-                }
-                Rule::IfStmt => {
-                    self.scan_if_stmt(s, ir_session, Some(while_cond), Some(while_next));
-                }
-                Rule::WhileStmt => {
-                    self.scan_while_stmt(s, ir_session);
-                }
-                Rule::Block => {
-                    self.scan_block(
-                        s,
-                        ir_session,
-                        true,
-                        false,
-                        Some(while_cond),
-                        Some(while_next),
-                    );
-                }
-                Rule::ContinueStmt => {
-                    let _ = ir_session.builder.build_unconditional_branch(while_cond);
-                }
-                Rule::BreakStmt => {
-                    let _ = ir_session.builder.build_unconditional_branch(while_next);
-                }
-                Rule::ReturnStmt => {
-                    self.scan_return_stmt(s, ir_session);
-                }
-                _ => {}
-            }
+            self.scan_stmt(s, ir_session, true, Some(while_cond), Some(while_body));
         }
         // 函数体出栈
         ir_session.scope_stack.pop();
@@ -687,7 +671,11 @@ impl<'a> Scanner<'a> {
         let mut add_exp_iter = Self::skip_in(add_exp);
         // 读取乘法表达式
         let mul_exp = add_exp_iter.next().unwrap();
-        let mut left = self.scan_mul_exp(mul_exp, ir_session).unwrap();
+        let mul_res =  self.scan_mul_exp(mul_exp, ir_session);
+        if mul_res.is_none() {
+            return None;
+        }
+        let mut left = mul_res.unwrap();
         while let Some(op) = add_exp_iter.next() {
             if op.as_rule() != Rule::MulExp {
                 let right_exp = add_exp_iter.next().unwrap();
@@ -720,7 +708,11 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut mul_iter = Self::skip_in(mul_exp);
         let unary_exp = mul_iter.next().unwrap();
-        let mut left = self.scan_unary_exp(unary_exp, ir_session).unwrap();
+        let unary_res = self.scan_unary_exp(unary_exp, ir_session);
+        if unary_res.is_none() {
+           return None;
+        }
+        let mut left = unary_res.unwrap();
         while let Some(op) = mul_iter.next() {
             if op.as_rule() != Rule::UnaryExp {
                 let right_exp = mul_iter.next().unwrap();
@@ -789,10 +781,10 @@ impl<'a> Scanner<'a> {
                 .build_call(function, &[], call_name)
                 .unwrap()
                 .try_as_basic_value()
-                .left()
-                .unwrap()
-                .into_int_value();
-            result = Some(r);
+                .left();
+            if r.is_some() {
+                result = Some(r.unwrap().into_int_value());
+            }
         } else {
             let mut param_exps = Vec::<BasicMetadataValueEnum<'ctx>>::new();
             let params_iter = Self::skip_in(params);
@@ -807,10 +799,10 @@ impl<'a> Scanner<'a> {
                 .build_call(function, &param_exps, call_name)
                 .unwrap()
                 .try_as_basic_value()
-                .left()
-                .unwrap()
-                .into_int_value();
-            result = Some(r);
+                .left();
+            if r.is_some() {
+                result = Some(r.unwrap().into_int_value());
+            }
         }
         if function.get_type().get_return_type().is_none() {
             None
@@ -1087,6 +1079,13 @@ pub enum ScopeKey<'ctx> {
 impl<'ctx> ScopeKey<'ctx> {
     fn is_global(&self) -> bool {
         if let ScopeKey::Global = self {
+            return true;
+        }
+        false
+    }
+
+    fn is_function(&self) -> bool {
+        if let ScopeKey::Ident(_) = self {
             return true;
         }
         false
