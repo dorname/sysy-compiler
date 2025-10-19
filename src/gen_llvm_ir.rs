@@ -1052,13 +1052,13 @@ impl<'a> Scanner<'a> {
         let mut eq_exp_iter = Self::skip_in(eq_exp);
         // 先处理第一个 RelExp
         let rel_exp = eq_exp_iter.next().unwrap();
-        let mut result = self.scan_rel_exp(rel_exp, ir_session).unwrap();
+        let mut result = self.scan_rel_exp_for_branch(rel_exp, ir_session).unwrap();
         
         // 处理后续的 == 或 != 操作
         while let Some(e) = eq_exp_iter.next() {
             if e.as_rule() != Rule::RelExp {
                 let right_rel = eq_exp_iter.next().unwrap();
-                let right = self.scan_rel_exp(right_rel, ir_session).unwrap();
+                let right = self.scan_rel_exp_for_branch(right_rel, ir_session).unwrap();
                 
                 if e.as_rule() == Rule::Equal {
                     result = ir_session
@@ -1133,12 +1133,8 @@ impl<'a> Scanner<'a> {
                 };
             }
         }
-        // 如果没有比较操作，需要将整数转换为布尔值
-        if !has_comparison && left.get_type().get_bit_width() == 32 {
-            left = ir_session.builder.build_int_compare(
-                IntPredicate::NE, left, ir_session.context.i32_type().const_int(0, false), "to_bool"
-            ).unwrap();
-        }
+        // 如果没有比较操作，直接返回原值（这种情况不应该发生）
+        // 因为scan_rel_exp_for_branch只在有比较操作时被调用
         Some(left)
     }
 
