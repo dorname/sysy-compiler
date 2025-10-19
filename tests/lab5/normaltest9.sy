@@ -4,3 +4,4 @@ return 1;
 int main(){
 return func();
 }
+// output 1

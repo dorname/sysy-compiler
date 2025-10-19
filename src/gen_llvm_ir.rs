@@ -89,6 +89,9 @@ impl<'a> Scanner<'a> {
                 // dbg!(declaration);
                 self.scan_declaration(declaration, &mut ir_session);
             }
+
+            let _ = ir_session.module.verify();
+
             // 输出IR
             ir_session.module.print_to_file(self.output).unwrap();
         }
@@ -107,7 +110,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn scan_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        let mut decl_iter = Self::skip_in(pair);
+        let decl_iter = Self::skip_in(pair);
         for decl in decl_iter {
             match decl.as_rule() {
                 Rule::ConstDecl => {
@@ -122,7 +125,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn scan_const_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        let mut const_decl_iter = Self::skip_in(pair);
+        let const_decl_iter = Self::skip_in(pair);
         let mut const_decls = Vec::<Pair<'_, Rule>>::new();
         for decl in const_decl_iter {
             if decl.as_rule() == Rule::ConstDef {
@@ -130,7 +133,7 @@ impl<'a> Scanner<'a> {
             }
         }
         for decl in const_decls {
-            self.scan_const_decl(decl, ir_session);
+            self.scan_const_def(decl, ir_session);
         }
     }
 
@@ -149,7 +152,7 @@ impl<'a> Scanner<'a> {
                     val.set_initializer(&const_init);
                     val.set_constant(true);
                     // 加入符号表
-                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
                     scope.insert(
                         ident.as_str().to_string(),
                         Type::GlobalVar(val.as_pointer_value()),
@@ -162,7 +165,7 @@ impl<'a> Scanner<'a> {
                     // 存储到val中
                     let _ = ir_session.builder.build_store(val, const_init);
                     // 加入符号表
-                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
                     scope.insert(ident.as_str().to_string(), Type::LocalVar(val));
                 }
             }
@@ -175,7 +178,7 @@ impl<'a> Scanner<'a> {
         ir_session: &mut IrSession<'ctx>,
     ) -> Option<IntValue<'ctx>> {
         // 本次实验不处理数组
-        let mut const_init_iter = Self::skip_in(pair);
+        let const_init_iter = Self::skip_in(pair);
         for const_exp in const_init_iter {
             if const_exp.as_rule() == Rule::ConstExp {
                 let add_exp = const_exp.into_inner().next().unwrap();
@@ -186,7 +189,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn scan_var_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        let mut var_decl_iter = Self::skip_in(pair);
+        let var_decl_iter = Self::skip_in(pair);
         let mut var_defs = Vec::<Pair<'_, Rule>>::new();
         for rule in var_decl_iter {
             if rule.as_rule() == Rule::VarDef {
@@ -212,7 +215,7 @@ impl<'a> Scanner<'a> {
                     // 初始化
                     val.set_initializer(&const_init);
                     // 加入符号表
-                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
                     scope.insert(
                         ident.as_str().to_string(),
                         Type::GlobalVar(val.as_pointer_value()),
@@ -225,7 +228,7 @@ impl<'a> Scanner<'a> {
                     // 存储到val中
                     let _ = ir_session.builder.build_store(val, const_init);
                     // 加入符号表
-                    let mut scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                    let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
                     scope.insert(ident.as_str().to_string(), Type::LocalVar(val));
                 }
             }
@@ -238,7 +241,7 @@ impl<'a> Scanner<'a> {
         ir_session: &mut IrSession<'ctx>,
     ) -> Option<IntValue<'ctx>> {
         // 本次实验不处理数组
-        let mut var_init_iter = Self::skip_in(pair);
+        let var_init_iter = Self::skip_in(pair);
         for exp in var_init_iter {
             if exp.as_rule() == Rule::Exp {
                 return self.scan_exp(exp, ir_session);
@@ -268,7 +271,7 @@ impl<'a> Scanner<'a> {
             params = Self::collect_func_params(params_rule);
             param_types = params
                 .iter()
-                .map(|param| i32_type.into())
+                .map(|_param| i32_type.into())
                 .collect::<Vec<_>>();
             func_body = func_def_iter.skip(1).next();
         } else {
@@ -488,7 +491,7 @@ impl<'a> Scanner<'a> {
     ) {
         // 当no_inner为true 不是需要创建新块并添加进入作用域
         if no_inner {
-            let mut block_item_iter = Self::skip_in(block);
+            let block_item_iter = Self::skip_in(block);
             for block_item in block_item_iter {
                 let item_iter = Self::skip_in(block_item);
                 for item in item_iter {
@@ -496,7 +499,30 @@ impl<'a> Scanner<'a> {
                 }
             }
         } else {
-            todo!("处理任意的内部块")
+            // 创建新的作用域用于内部块
+            let function = ir_session
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap();
+            let block_name = format!("block_{}", std::ptr::addr_of!(block) as usize);
+            let inner_block = ir_session.context.append_basic_block(function, &block_name);
+            
+            // 压入新的作用域
+            ir_session.scope_stack.push(ScopeKey::InnerBlock(inner_block));
+            ir_session.builder.position_at_end(inner_block);
+            
+            let block_item_iter = Self::skip_in(block);
+            for block_item in block_item_iter {
+                let item_iter = Self::skip_in(block_item);
+                for item in item_iter {
+                    self.scan_block_item(item, ir_session, cond_blk, next_blk);
+                }
+            }
+            
+            // 弹出作用域
+            ir_session.scope_stack.pop();
         }
     }
 
@@ -508,7 +534,7 @@ impl<'a> Scanner<'a> {
         cond_blk: Option<BasicBlock<'ctx>>,
         next_blk: Option<BasicBlock<'ctx>>,
     ) {
-        let mut if_iter = Self::skip_in(if_stmt.clone());
+        let if_iter = Self::skip_in(if_stmt.clone());
         let function = ir_session
             .builder
             .get_insert_block()
@@ -585,7 +611,7 @@ impl<'a> Scanner<'a> {
 
     /// 处理循环语句
     fn scan_while_stmt<'ctx>(&self, while_stmt: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
-        let mut while_iter = Self::skip_in(while_stmt);
+        let while_iter = Self::skip_in(while_stmt);
         // let function = ir_session.scope_stack.get_current_scope_func_key().unwrap();
         let function = ir_session
             .builder
@@ -623,9 +649,9 @@ impl<'a> Scanner<'a> {
             .push(ScopeKey::InnerBlock(while_body));
         let mut while_iter = while_iter.skip(1);
         let stmt = while_iter.next().unwrap();
-        let mut stmt_iter = Self::skip_in(stmt);
+        let stmt_iter = Self::skip_in(stmt);
         for s in stmt_iter {
-            self.scan_stmt(s, ir_session, true, Some(while_cond), Some(while_body));
+            self.scan_stmt(s, ir_session, true, Some(while_cond), Some(while_next));
         }
         // 函数体出栈
         ir_session.scope_stack.pop();
@@ -1052,7 +1078,7 @@ impl IrCore {
             context: Context::create(),
         }
     }
-    pub fn start_session(&self, module_name: &str) -> IrSession {
+    pub fn start_session(&self, module_name: &str) -> IrSession<'_> {
         let module = self.context.create_module(module_name);
         let builder = self.context.create_builder();
         IrSession {
@@ -1132,7 +1158,7 @@ impl<'ctx> ScopeStack<'ctx> {
     }
 
     /// 获取当前作用域的符号表
-    pub fn get_current_scope(&self) -> Option<&Scope> {
+    pub fn get_current_scope(&self) -> Option<&Scope<'_>> {
         let last_key = self.stack.last().unwrap();
         self.get_scope(last_key)
     }
@@ -1274,25 +1300,224 @@ mod tests {
     use inkwell::context::Context;
     use pest::iterators::Pair;
     use std::io::stdout;
+    use std::process::Command;
 
     const FILE_PATH: &str = "tests/lab5/";
-
+    
+    /// 执行LLVM IR文件并返回退出码
+    fn execute_llvm_ir(file_path: &str) -> i32 {
+        let output = Command::new("lli")
+            .arg(file_path)
+            .output()
+            .expect("Failed to execute lli command");
+        
+        output.status.code().unwrap_or(-1)
+    }
+    
+    /// 从源文件中解析期望的输出值
+    fn parse_expected_output(source_path: &str) -> Option<i32> {
+        let content = std::fs::read_to_string(source_path).ok()?;
+        for line in content.lines() {
+            if line.trim().starts_with("// output") {
+                let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                if parts.len() >= 3 && parts[0] == "//" && parts[1] == "output" {
+                    return parts[2].parse::<i32>().ok();
+                }
+            }
+        }
+        None
+    }
+    
+    /// 比较两个LLVM IR文件的执行结果
+    fn compare_execution_results(official_path: &str, generated_path: &str) {
+        let official_result = execute_llvm_ir(official_path);
+        let generated_result = execute_llvm_ir(generated_path);
+        
+        assert_eq!(
+            official_result, 
+            generated_result,
+            "Execution results differ: official={}, generated={}",
+            official_result,
+            generated_result
+        );
+    }
+    
+    /// 比较生成的LLVM IR文件与期望的输出值
+    fn compare_with_expected_output(generated_path: &str, expected_output: i32) {
+        let generated_result = execute_llvm_ir(generated_path);
+        
+        assert_eq!(
+            generated_result, 
+            expected_output,
+            "Execution result differs from expected: generated={}, expected={}",
+            generated_result,
+            expected_output
+        );
+    }
     #[test]
-    fn test_scan() {
-        let file_path = format!("{}{}", FILE_PATH, "normaltest2.sy");
-        let out_path = format!("{}{}", FILE_PATH, "normaltest2_out.ll");
+    fn test_normaltest1() {
+        let file_path = format!("{}{}", FILE_PATH, "normaltest1.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest1_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "normaltest1.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
         scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+
+    #[test]
+    fn test_normaltest2() {
+        let file_path = format!("{}{}", FILE_PATH, "normaltest2.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest2_out.ll");
+        
+        // 从源文件中解析期望的输出值
+        let expected_output = parse_expected_output(&file_path)
+            .expect("Failed to parse expected output from source file");
+        
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_with_expected_output(&out_path, expected_output);
+    }
+
+    #[test]
+    fn test_normaltest4() {
+        let file_path = format!("{}{}", FILE_PATH, "normaltest4.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest4_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "normaltest4.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_normaltest9() {
+        let file_path = format!("{}{}", FILE_PATH, "normaltest9.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest9_out.ll");
+        
+        // 从源文件中解析期望的输出值
+        let expected_output = parse_expected_output(&file_path)
+            .expect("Failed to parse expected output from source file");
+        
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_with_expected_output(&out_path, expected_output);
+    }
+
+    #[test]
+    fn test_normaltest11() {
+        let file_path = format!("{}{}", FILE_PATH, "normaltest11.sy");
+        let out_path = format!("{}{}", FILE_PATH, "normaltest11_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "normaltest11.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_example01() {
+        let file_path = format!("{}{}", FILE_PATH, "example01.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example01_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example01.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_example02() {
+        let file_path = format!("{}{}", FILE_PATH, "example02.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example02_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example02.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_example03() {
+        let file_path = format!("{}{}", FILE_PATH, "example03.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example03_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example03.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_example04() {
+        let file_path = format!("{}{}", FILE_PATH, "example04.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example04_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example04.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+
+    #[test]
+    fn test_example05() {
+        let file_path = format!("{}{}", FILE_PATH, "example05.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example05_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example05.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
+    }
+
+    #[test]
+    fn test_example06() {
+        let file_path = format!("{}{}", FILE_PATH, "example06.sy");
+        let out_path = format!("{}{}", FILE_PATH, "example06_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example06.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
     }
 
     #[test]
     fn test_example07() {
         let file_path = format!("{}{}", FILE_PATH, "example07.sy");
         let out_path = format!("{}{}", FILE_PATH, "example07_out.ll");
+        let official_path = format!("{}{}", FILE_PATH, "example07.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
         scanner.scan_collect();
+        
+        // 比较执行结果
+        compare_execution_results(&official_path, &out_path);
     }
 
     #[test]

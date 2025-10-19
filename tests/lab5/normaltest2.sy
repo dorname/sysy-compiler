@@ -10,3 +10,4 @@ return i * b(i) * k;
 int main(){
 return c(2, 2);
 }
+// output 16
