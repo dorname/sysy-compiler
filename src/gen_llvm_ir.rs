@@ -352,7 +352,7 @@ impl<'a> Scanner<'a> {
         for block_item in block_items {
             let item_iter = Self::skip_in(block_item);
             for item in item_iter {
-                self.scan_block_item(item, ir_session,None,None);
+                self.scan_block_item(item, ir_session, None, None);
             }
         }
 
@@ -569,16 +569,14 @@ impl<'a> Scanner<'a> {
         let if_next = ir_session.context.append_basic_block(function, "if_next");
         let mut if_iter = if_iter.skip(2);
         let cond = if_iter.next().unwrap();
-        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
         let _ = if_iter.next();
         let stmt = if_iter.next().unwrap();
         if let Some(els) = if_iter.next()
             && els.as_rule() == Rule::Else
         {
             let if_false = ir_session.context.append_basic_block(function, "if_false");
-            let _ = ir_session
-                .builder
-                .build_conditional_branch(cond_val, if_true, if_false);
+            // 使用短路求值处理条件
+            self.scan_l_or_exp_with_targets(cond, ir_session, Some(if_true), Some(if_false));
 
             // 更新作用域为 if_true块
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
@@ -611,9 +609,8 @@ impl<'a> Scanner<'a> {
             }
             ir_session.scope_stack.pop();
         } else {
-            let _ = ir_session
-                .builder
-                .build_conditional_branch(cond_val, if_true, if_next);
+            // 使用短路求值处理条件
+            self.scan_l_or_exp_with_targets(cond, ir_session, Some(if_true), Some(if_next));
             // 更新作用域为 if_true块
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
             ir_session.builder.position_at_end(if_true); // 光标移动到if_true块末端
@@ -672,11 +669,8 @@ impl<'a> Scanner<'a> {
         ir_session
             .scope_stack
             .push(ScopeKey::InnerBlock(while_cond));
-        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
-        // 构建分支
-        let _ = ir_session
-            .builder
-            .build_conditional_branch(cond_val, while_body, while_next);
+        // 使用短路求值处理条件
+        self.scan_l_or_exp_with_targets(cond, ir_session, Some(while_body), Some(while_next));
 
         // 出栈
         ir_session.scope_stack.pop();
@@ -993,87 +987,136 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut cond_exp_iter = Self::skip_in(cond_exp);
         let l_or_exp = cond_exp_iter.next().unwrap();
-        let result = self.scan_l_or_exp_for_branch(l_or_exp, ir_session)?;
-        Some(result)
+        let result = self.scan_l_or_exp(l_or_exp, ir_session)?;
+        // 将整数结果转换为布尔值用于分支条件
+        let bool_result = ir_session.builder.build_int_compare(
+            IntPredicate::NE, result, ir_session.context.i32_type().const_int(0, false), "cond_bool"
+        ).unwrap();
+        // 将布尔值转换回i32用于返回值
+        let i32_result = ir_session.builder.build_int_z_extend(bool_result, ir_session.context.i32_type(), "cond_result").unwrap().as_basic_value_enum().into_int_value();
+        Some(i32_result)
     }
 
-    /// 专门用于分支条件的LOrExp扫描函数
-    fn scan_l_or_exp_for_branch<'ctx>(
+    /// 短路求值的LOrExp扫描函数，用于条件分支
+    fn scan_l_or_exp_with_targets<'ctx>(
         &self,
         l_or_exp: Pair<'_, Rule>,
         ir_session: &mut IrSession<'ctx>,
+        true_block: Option<BasicBlock<'ctx>>,
+        false_block: Option<BasicBlock<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut l_or_exp_iter = Self::skip_in(l_or_exp);
-        // 先处理第一个 LAndExp 作为初始值
         let first = l_or_exp_iter.next()?;
-        let mut result = self.scan_l_and_exp_for_branch(first, ir_session)?;
-        
-        // 处理后续的 OR 操作
-        for e in l_or_exp_iter {
-            if e.as_rule() == Rule::LAndExp {
-                let res = self.scan_l_and_exp_for_branch(e, ir_session)?;
-                // 执行逻辑OR操作
-                result = ir_session.builder.build_or(result, res, "or_bool").unwrap();
+        let rest: Vec<_> = l_or_exp_iter.filter(|p| p.as_rule() == Rule::LAndExp).collect();
+
+        if rest.is_empty() {
+            // 没有OR操作，直接处理LAndExp
+            self.scan_l_and_exp_with_targets(first, ir_session, true_block, false_block)
+        } else {
+            // 有OR操作，需要短路求值
+            let function = ir_session.builder.get_insert_block()?.get_parent()?;
+            let mut next_block = ir_session.context.append_basic_block(function, "or_next");
+
+            self.scan_l_and_exp_with_targets(first, ir_session, true_block, Some(next_block));
+
+            for (i, item) in rest.iter().enumerate() {
+                ir_session.builder.position_at_end(next_block);
+                if i < rest.len() - 1 {
+                    let new_next = ir_session.context.append_basic_block(function, "or_next");
+                    self.scan_l_and_exp_with_targets(item.clone(), ir_session, true_block, Some(new_next));
+                    next_block = new_next;
+                } else {
+                    self.scan_l_and_exp_with_targets(item.clone(), ir_session, true_block, false_block);
+                }
             }
+            Some(ir_session.context.i32_type().const_int(0, false))
         }
-        
-        Some(result)
     }
 
-    /// 专门用于分支条件的LAndExp扫描函数
-    fn scan_l_and_exp_for_branch<'ctx>(
+    /// 短路求值的LAndExp扫描函数，用于条件分支
+    fn scan_l_and_exp_with_targets<'ctx>(
         &self,
         l_and_exp: Pair<'_, Rule>,
         ir_session: &mut IrSession<'ctx>,
+        true_block: Option<BasicBlock<'ctx>>,
+        false_block: Option<BasicBlock<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut l_and_exp_iter = Self::skip_in(l_and_exp);
-        // 先处理第一个 EqExp 作为初始值
         let first = l_and_exp_iter.next()?;
-        let mut result = self.scan_eq_exp_for_branch(first, ir_session)?;
-        
-        // 处理后续的 AND 操作
-        for e in l_and_exp_iter {
-            if e.as_rule() == Rule::EqExp {
-                let res = self.scan_eq_exp_for_branch(e, ir_session)?;
-                // 执行逻辑AND操作
-                result = ir_session.builder.build_and(result, res, "and_bool").unwrap();
+        let rest: Vec<_> = l_and_exp_iter.filter(|p| p.as_rule() == Rule::EqExp).collect();
+
+        if rest.is_empty() {
+            // 没有AND操作，直接处理EqExp
+            self.scan_eq_exp_with_targets(first, ir_session, true_block, false_block)
+        } else {
+            // 有AND操作，需要短路求值
+            let function = ir_session.builder.get_insert_block()?.get_parent()?;
+            let mut next_block = ir_session.context.append_basic_block(function, "and_next");
+
+            self.scan_eq_exp_with_targets(first, ir_session, Some(next_block), false_block);
+
+            for (i, item) in rest.iter().enumerate() {
+                ir_session.builder.position_at_end(next_block);
+                if i < rest.len() - 1 {
+                    let new_next = ir_session.context.append_basic_block(function, "and_next");
+                    self.scan_eq_exp_with_targets(item.clone(), ir_session, Some(new_next), false_block);
+                    next_block = new_next;
+                } else {
+                    self.scan_eq_exp_with_targets(item.clone(), ir_session, true_block, false_block);
+                }
             }
+            Some(ir_session.context.i32_type().const_int(0, false))
         }
-        
-        Some(result)
     }
 
-    /// 专门用于分支条件的EqExp扫描函数
-    fn scan_eq_exp_for_branch<'ctx>(
+    /// 短路求值的EqExp扫描函数，用于条件分支
+    fn scan_eq_exp_with_targets<'ctx>(
         &self,
         eq_exp: Pair<'_, Rule>,
         ir_session: &mut IrSession<'ctx>,
+        true_block: Option<BasicBlock<'ctx>>,
+        false_block: Option<BasicBlock<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut eq_exp_iter = Self::skip_in(eq_exp);
-        // 先处理第一个 RelExp
-        let rel_exp = eq_exp_iter.next().unwrap();
-        let mut result = self.scan_rel_exp_for_branch(rel_exp, ir_session).unwrap();
+        let rel_exp = eq_exp_iter.next()?;
+        let mut result = self.scan_rel_exp(rel_exp, ir_session)?;
         
         // 处理后续的 == 或 != 操作
         while let Some(e) = eq_exp_iter.next() {
             if e.as_rule() != Rule::RelExp {
-                let right_rel = eq_exp_iter.next().unwrap();
-                let right = self.scan_rel_exp_for_branch(right_rel, ir_session).unwrap();
+                let right_rel = eq_exp_iter.next()?;
+                let right = self.scan_rel_exp(right_rel, ir_session)?;
                 
-                if e.as_rule() == Rule::Equal {
-                    result = ir_session
-                        .builder
-                        .build_int_compare(EQ, result, right, "eq_tmp")
-                        .unwrap();
+                let cmp_result = if e.as_rule() == Rule::Equal {
+                    ir_session.builder.build_int_compare(EQ, result, right, "eq_tmp").unwrap()
                 } else {
-                    result = ir_session
-                        .builder
-                        .build_int_compare(NE, result, right, "ne_tmp")
-                        .unwrap();
+                    ir_session.builder.build_int_compare(NE, result, right, "ne_tmp").unwrap()
+                };
+                
+                // 如果有目标块，进行分支
+                if let (Some(true_blk), Some(false_blk)) = (true_block, false_block) {
+                    ir_session.builder.build_conditional_branch(cmp_result, true_blk, false_blk).unwrap();
+                    return Some(ir_session.context.i32_type().const_int(0, false));
                 }
+                
+                // 否则继续计算
+                result = ir_session.builder.build_int_z_extend(cmp_result, ir_session.context.i32_type(), "eq_result").unwrap().as_basic_value_enum().into_int_value();
             }
         }
-        Some(result)
+        
+        // 如果没有目标块，直接返回结果
+        if true_block.is_none() && false_block.is_none() {
+            Some(result)
+        } else {
+            // 有目标块但没有比较操作，需要将结果转换为布尔值
+            let bool_result = ir_session.builder.build_int_compare(
+                IntPredicate::NE, result, ir_session.context.i32_type().const_int(0, false), "to_bool"
+            ).unwrap();
+            if let (Some(true_blk), Some(false_blk)) = (true_block, false_block) {
+                ir_session.builder.build_conditional_branch(bool_result, true_blk, false_blk).unwrap();
+            }
+            Some(ir_session.context.i32_type().const_int(0, false))
+        }
     }
 
     /// 专门用于分支条件的RelExp扫描函数
@@ -1086,7 +1129,7 @@ impl<'a> Scanner<'a> {
         // 先处理第一个 AddExp
         let add_exp = rel_exp_iter.next().unwrap();
         let mut left = self.scan_add_exp(add_exp, ir_session).unwrap();
-        let mut has_comparison = false;
+        let mut _has_comparison = false;
         
         // 处理后续的比较操作
         while let Some(e) = rel_exp_iter.next() {
@@ -1096,28 +1139,28 @@ impl<'a> Scanner<'a> {
                 
                 left = match e.as_rule() {
                     Rule::LessEqual => {
-                        has_comparison = true;
+                        _has_comparison = true;
                         ir_session
                             .builder
                             .build_int_compare(SLE, left, right, "cmp")
                             .unwrap()
                     }
                     Rule::GreaterEqual => {
-                        has_comparison = true;
+                        _has_comparison = true;
                         ir_session
                             .builder
                             .build_int_compare(SGE, left, right, "cmp")
                             .unwrap()
                     }
                     Rule::Less => {
-                        has_comparison = true;
+                        _has_comparison = true;
                         ir_session
                             .builder
                             .build_int_compare(SLT, left, right, "cmp")
                             .unwrap()
                     }
                     Rule::Greater => {
-                        has_comparison = true;
+                        _has_comparison = true;
                         ir_session
                             .builder
                             .build_int_compare(SGT, left, right, "cmp")
@@ -1125,7 +1168,7 @@ impl<'a> Scanner<'a> {
                     }
                     _ => {
                         // 如果不是比较操作，需要将整数转换为布尔值
-                        has_comparison = true;
+                        _has_comparison = true;
                         ir_session.builder.build_int_compare(
                             IntPredicate::NE, left, ir_session.context.i32_type().const_int(0, false), "to_bool"
                         ).unwrap()
@@ -1239,14 +1282,14 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut rel_exp_iter = Self::skip_in(rel_exp);
         // 先处理第一个 AddExp
-        let add_exp = rel_exp_iter.next().unwrap();
-        let mut left = self.scan_add_exp(add_exp, ir_session).unwrap();
+        let add_exp = rel_exp_iter.next()?;
+        let mut left = self.scan_add_exp(add_exp, ir_session)?;
         
         // 处理后续的比较操作
         while let Some(e) = rel_exp_iter.next() {
             if e.as_rule() != Rule::AddExp {
-                let right_add = rel_exp_iter.next().unwrap();
-                let right = self.scan_add_exp(right_add, ir_session).unwrap();
+                let right_add = rel_exp_iter.next()?;
+                let right = self.scan_add_exp(right_add, ir_session)?;
                 
                 left = match e.as_rule() {
                     Rule::LessEqual => {
@@ -1607,7 +1650,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "normaltest1.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1625,7 +1668,7 @@ mod tests {
         
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_with_expected_output(&out_path, expected_output);
@@ -1638,7 +1681,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "normaltest4.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1655,7 +1698,7 @@ mod tests {
         
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_with_expected_output(&out_path, expected_output);
@@ -1668,7 +1711,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "normaltest11.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1681,7 +1724,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example01.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1694,7 +1737,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example02.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1707,7 +1750,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example03.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1720,7 +1763,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example04.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1734,7 +1777,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example05.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1747,7 +1790,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example06.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1760,7 +1803,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example07.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
