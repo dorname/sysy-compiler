@@ -587,6 +587,12 @@ impl<'a> Scanner<'a> {
             for stt in stmt_iter {
                 self.scan_stmt(stt, ir_session, true, None, None);
             }
+            // 确保if_true块有终止符
+            if let Some(bb) = ir_session.builder.get_insert_block() {
+                if !bb.get_terminator().is_some() {
+                    ir_session.builder.build_unconditional_branch(if_next).unwrap();
+                }
+            }
             ir_session.scope_stack.pop();
 
             // 更新作用域为 if_false块
@@ -596,6 +602,12 @@ impl<'a> Scanner<'a> {
             let stmt_iter = Self::skip_in(stmt);
             for stt in stmt_iter {
                 self.scan_stmt(stt, ir_session, true, None, None);
+            }
+            // 确保if_false块有终止符
+            if let Some(bb) = ir_session.builder.get_insert_block() {
+                if !bb.get_terminator().is_some() {
+                    ir_session.builder.build_unconditional_branch(if_next).unwrap();
+                }
             }
             ir_session.scope_stack.pop();
         } else {
@@ -624,13 +636,17 @@ impl<'a> Scanner<'a> {
                     }
                 }
             }
+            // 确保if_true块有终止符
+            if let Some(bb) = ir_session.builder.get_insert_block() {
+                if !bb.get_terminator().is_some() {
+                    ir_session.builder.build_unconditional_branch(if_next).unwrap();
+                }
+            }
             ir_session.scope_stack.pop();
         }
         // ir_session.scope_stack.push(ScopeKey::InnerBlock(if_next)); if_next 实际上回到了函数体所以实际上不需要入栈因为它的作用域和函数体是一样
         ir_session.builder.position_at_end(if_next);
-        if let Some(c) = cond_blk {
-            let _ = ir_session.builder.build_unconditional_branch(c);
-        }
+        // 注意：这里不应该添加额外的分支，因为if_next是后续代码的入口点
     }
 
     /// 处理循环语句
@@ -676,6 +692,12 @@ impl<'a> Scanner<'a> {
         let stmt_iter = Self::skip_in(stmt);
         for s in stmt_iter {
             self.scan_stmt(s, ir_session, true, Some(while_cond), Some(while_next));
+        }
+        // 确保while_body块有终止符
+        if let Some(bb) = ir_session.builder.get_insert_block() {
+            if !bb.get_terminator().is_some() {
+                ir_session.builder.build_unconditional_branch(while_cond).unwrap();
+            }
         }
         // 函数体出栈
         ir_session.scope_stack.pop();
