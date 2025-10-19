@@ -8,3 +8,4 @@ echo "LLVM环境变量已设置:"
 echo "LLVM_SYS_140_PREFIX=$LLVM_SYS_140_PREFIX"
 echo ""
 echo "现在可以运行 cargo build 或 cargo run"
+
