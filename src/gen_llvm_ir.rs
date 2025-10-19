@@ -569,7 +569,7 @@ impl<'a> Scanner<'a> {
         let if_next = ir_session.context.append_basic_block(function, "if_next");
         let mut if_iter = if_iter.skip(2);
         let cond = if_iter.next().unwrap();
-        let cond_val = self.scan_cond(cond, ir_session).unwrap();
+        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
         let _ = if_iter.next();
         let stmt = if_iter.next().unwrap();
         if let Some(els) = if_iter.next()
@@ -672,7 +672,7 @@ impl<'a> Scanner<'a> {
         ir_session
             .scope_stack
             .push(ScopeKey::InnerBlock(while_cond));
-        let cond_val = self.scan_cond(cond, ir_session).unwrap();
+        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
         // 构建分支
         let _ = ir_session
             .builder
@@ -975,7 +975,171 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut cond_exp_iter = Self::skip_in(cond_exp);
         let l_or_exp = cond_exp_iter.next().unwrap();
-        self.scan_l_or_exp(l_or_exp, ir_session)
+        let result = self.scan_l_or_exp(l_or_exp, ir_session)?;
+        // 将整数结果转换为布尔值用于分支条件
+        let bool_result = ir_session.builder.build_int_compare(
+            IntPredicate::NE, result, ir_session.context.i32_type().const_int(0, false), "cond_bool"
+        ).unwrap();
+        // 将布尔值转换回i32用于返回值
+        let i32_result = ir_session.builder.build_int_z_extend(bool_result, ir_session.context.i32_type(), "cond_result").unwrap().as_basic_value_enum().into_int_value();
+        Some(i32_result)
+    }
+
+    /// 专门用于分支条件的扫描函数，返回布尔类型
+    fn scan_cond_for_branch<'ctx>(
+        &self,
+        cond_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut cond_exp_iter = Self::skip_in(cond_exp);
+        let l_or_exp = cond_exp_iter.next().unwrap();
+        let result = self.scan_l_or_exp_for_branch(l_or_exp, ir_session)?;
+        Some(result)
+    }
+
+    /// 专门用于分支条件的LOrExp扫描函数
+    fn scan_l_or_exp_for_branch<'ctx>(
+        &self,
+        l_or_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut l_or_exp_iter = Self::skip_in(l_or_exp);
+        // 先处理第一个 LAndExp 作为初始值
+        let first = l_or_exp_iter.next()?;
+        let mut result = self.scan_l_and_exp_for_branch(first, ir_session)?;
+        
+        // 处理后续的 OR 操作
+        for e in l_or_exp_iter {
+            if e.as_rule() == Rule::LAndExp {
+                let res = self.scan_l_and_exp_for_branch(e, ir_session)?;
+                // 执行逻辑OR操作
+                result = ir_session.builder.build_or(result, res, "or_bool").unwrap();
+            }
+        }
+        
+        Some(result)
+    }
+
+    /// 专门用于分支条件的LAndExp扫描函数
+    fn scan_l_and_exp_for_branch<'ctx>(
+        &self,
+        l_and_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut l_and_exp_iter = Self::skip_in(l_and_exp);
+        // 先处理第一个 EqExp 作为初始值
+        let first = l_and_exp_iter.next()?;
+        let mut result = self.scan_eq_exp_for_branch(first, ir_session)?;
+        
+        // 处理后续的 AND 操作
+        for e in l_and_exp_iter {
+            if e.as_rule() == Rule::EqExp {
+                let res = self.scan_eq_exp_for_branch(e, ir_session)?;
+                // 执行逻辑AND操作
+                result = ir_session.builder.build_and(result, res, "and_bool").unwrap();
+            }
+        }
+        
+        Some(result)
+    }
+
+    /// 专门用于分支条件的EqExp扫描函数
+    fn scan_eq_exp_for_branch<'ctx>(
+        &self,
+        eq_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut eq_exp_iter = Self::skip_in(eq_exp);
+        // 先处理第一个 RelExp
+        let rel_exp = eq_exp_iter.next().unwrap();
+        let mut result = self.scan_rel_exp(rel_exp, ir_session).unwrap();
+        
+        // 处理后续的 == 或 != 操作
+        while let Some(e) = eq_exp_iter.next() {
+            if e.as_rule() != Rule::RelExp {
+                let right_rel = eq_exp_iter.next().unwrap();
+                let right = self.scan_rel_exp(right_rel, ir_session).unwrap();
+                
+                if e.as_rule() == Rule::Equal {
+                    result = ir_session
+                        .builder
+                        .build_int_compare(EQ, result, right, "eq_tmp")
+                        .unwrap();
+                } else {
+                    result = ir_session
+                        .builder
+                        .build_int_compare(NE, result, right, "ne_tmp")
+                        .unwrap();
+                }
+            }
+        }
+        Some(result)
+    }
+
+    /// 专门用于分支条件的RelExp扫描函数
+    fn scan_rel_exp_for_branch<'ctx>(
+        &self,
+        rel_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+    ) -> Option<IntValue<'ctx>> {
+        let mut rel_exp_iter = Self::skip_in(rel_exp);
+        // 先处理第一个 AddExp
+        let add_exp = rel_exp_iter.next().unwrap();
+        let mut left = self.scan_add_exp(add_exp, ir_session).unwrap();
+        let mut has_comparison = false;
+        
+        // 处理后续的比较操作
+        while let Some(e) = rel_exp_iter.next() {
+            if e.as_rule() != Rule::AddExp {
+                let right_add = rel_exp_iter.next().unwrap();
+                let right = self.scan_add_exp(right_add, ir_session).unwrap();
+                
+                left = match e.as_rule() {
+                    Rule::LessEqual => {
+                        has_comparison = true;
+                        ir_session
+                            .builder
+                            .build_int_compare(SLE, left, right, "cmp")
+                            .unwrap()
+                    }
+                    Rule::GreaterEqual => {
+                        has_comparison = true;
+                        ir_session
+                            .builder
+                            .build_int_compare(SGE, left, right, "cmp")
+                            .unwrap()
+                    }
+                    Rule::Less => {
+                        has_comparison = true;
+                        ir_session
+                            .builder
+                            .build_int_compare(SLT, left, right, "cmp")
+                            .unwrap()
+                    }
+                    Rule::Greater => {
+                        has_comparison = true;
+                        ir_session
+                            .builder
+                            .build_int_compare(SGT, left, right, "cmp")
+                            .unwrap()
+                    }
+                    _ => {
+                        // 如果不是比较操作，需要将整数转换为布尔值
+                        has_comparison = true;
+                        ir_session.builder.build_int_compare(
+                            IntPredicate::NE, left, ir_session.context.i32_type().const_int(0, false), "to_bool"
+                        ).unwrap()
+                    },
+                };
+            }
+        }
+        // 如果没有比较操作，需要将整数转换为布尔值
+        if !has_comparison && left.get_type().get_bit_width() == 32 {
+            left = ir_session.builder.build_int_compare(
+                IntPredicate::NE, left, ir_session.context.i32_type().const_int(0, false), "to_bool"
+            ).unwrap();
+        }
+        Some(left)
     }
 
     fn scan_l_or_exp<'ctx>(
@@ -988,11 +1152,21 @@ impl<'a> Scanner<'a> {
         let first = l_or_exp_iter.next()?;
         let mut result = self.scan_l_and_exp(first, ir_session)?;
         
-        // 处理后续的 OR 操作 - 简化实现
+        // 处理后续的 OR 操作 - 需要转换为布尔类型
         for e in l_or_exp_iter {
             if e.as_rule() == Rule::LAndExp {
                 let res = self.scan_l_and_exp(e, ir_session)?;
-                result = ir_session.builder.build_or(result, res, "or_tmp").ok()?;
+                // 将两个整数转换为布尔值进行比较
+                let left_bool = ir_session.builder.build_int_compare(
+                    IntPredicate::NE, result, ir_session.context.i32_type().const_int(0, false), "left_bool"
+                ).unwrap();
+                let right_bool = ir_session.builder.build_int_compare(
+                    IntPredicate::NE, res, ir_session.context.i32_type().const_int(0, false), "right_bool"
+                ).unwrap();
+                // 执行逻辑OR操作
+                let or_result = ir_session.builder.build_or(left_bool, right_bool, "or_bool").unwrap();
+                // 将布尔结果转换回i32
+                result = ir_session.builder.build_int_z_extend(or_result, ir_session.context.i32_type(), "or_result").unwrap().as_basic_value_enum().into_int_value();
             }
         }
         
@@ -1009,11 +1183,21 @@ impl<'a> Scanner<'a> {
         let first = l_and_exp_iter.next()?;
         let mut result = self.scan_eq_exp(first, ir_session)?;
         
-        // 处理后续的 AND 操作 - 简化实现
+        // 处理后续的 AND 操作 - 需要转换为布尔类型
         for e in l_and_exp_iter {
             if e.as_rule() == Rule::EqExp {
                 let res = self.scan_eq_exp(e, ir_session)?;
-                result = ir_session.builder.build_and(result, res, "and_tmp").ok()?;
+                // 将两个整数转换为布尔值进行比较
+                let left_bool = ir_session.builder.build_int_compare(
+                    IntPredicate::NE, result, ir_session.context.i32_type().const_int(0, false), "left_bool"
+                ).unwrap();
+                let right_bool = ir_session.builder.build_int_compare(
+                    IntPredicate::NE, res, ir_session.context.i32_type().const_int(0, false), "right_bool"
+                ).unwrap();
+                // 执行逻辑AND操作
+                let and_result = ir_session.builder.build_and(left_bool, right_bool, "and_bool").unwrap();
+                // 将布尔结果转换回i32
+                result = ir_session.builder.build_int_z_extend(and_result, ir_session.context.i32_type(), "and_result").unwrap().as_basic_value_enum().into_int_value();
             }
         }
         
