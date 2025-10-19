@@ -73,58 +73,70 @@ impl<'a> Scanner<'a> {
             ir_core: IrCore::new(),
         }
     }
-    pub fn scan_collect(&self) {
-        if let Some(mut pairs) = parse_file(self.input) {
-            // 处理文件头
-            let file_pair = pairs.next().unwrap();
-            // 读取编译单元
-            let compilation_unit = file_pair.into_inner().next().unwrap();
-            // 获取所有的声明
-            let declarations = compilation_unit.into_inner();
+    pub fn scan_collect(&self) -> Result<(), String> {
+        let mut pairs = match parse_file(self.input) {
+            Some(pairs) => pairs,
+            None => return Err("语法解析失败".to_string()),
+        };
 
-            let mut ir_session = self.ir_core.start_session("module");
+        // 处理文件头
+        let file_pair = pairs.next().ok_or("文件为空")?;
+        // 读取编译单元
+        let compilation_unit = file_pair.into_inner().next().ok_or("编译单元为空")?;
+        // 获取所有的声明
+        let declarations = compilation_unit.into_inner();
 
-            // 依次扫描声明并收集符号
-            for declaration in declarations {
-                // dbg!(declaration);
-                self.scan_declaration(declaration, &mut ir_session);
+        let mut ir_session = self.ir_core.start_session("module");
+
+        // 依次扫描声明并收集符号
+        for declaration in declarations {
+            if let Err(e) = self.scan_declaration(declaration, &mut ir_session) {
+                return Err(format!("声明解析错误: {}", e));
             }
-
-            let _ = ir_session.module.verify();
-
-            // 输出IR
-            ir_session.module.print_to_file(self.output).unwrap();
         }
+
+        // 验证IR
+        if let Err(e) = ir_session.module.verify() {
+            return Err(format!("LLVM IR验证失败: {}", e));
+        }
+
+        // 输出IR
+        ir_session.module.print_to_file(self.output)
+            .map_err(|e| format!("输出IR文件失败: {}", e))?;
+
+        Ok(())
     }
 
-    fn scan_declaration<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_declaration<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         match pair.as_rule() {
             Rule::Decl => {
-                self.scan_decl(pair, ir_session);
+                self.scan_decl(pair, ir_session)?;
             }
             Rule::FuncDef => {
-                self.scan_func_def(pair, ir_session);
+                self.scan_func_def(pair, ir_session)?;
             }
             _ => {}
         }
+        Ok(())
     }
 
-    fn scan_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let decl_iter = Self::skip_in(pair);
         for decl in decl_iter {
             match decl.as_rule() {
                 Rule::ConstDecl => {
-                    self.scan_const_decl(decl, ir_session);
+                    self.scan_const_decl(decl, ir_session)?;
                 }
                 Rule::VarDecl => {
-                    self.scan_var_decl(decl, ir_session);
+                    self.scan_var_decl(decl, ir_session)?;
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
-    fn scan_const_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_const_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let const_decl_iter = Self::skip_in(pair);
         let mut const_decls = Vec::<Pair<'_, Rule>>::new();
         for decl in const_decl_iter {
@@ -133,18 +145,19 @@ impl<'a> Scanner<'a> {
             }
         }
         for decl in const_decls {
-            self.scan_const_def(decl, ir_session);
+            self.scan_const_def(decl, ir_session)?;
         }
+        Ok(())
     }
 
-    fn scan_const_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_const_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let mut const_def_iter = Self::skip_in(pair);
-        let ident = const_def_iter.next().unwrap();
+        let ident = const_def_iter.next().ok_or("常量定义缺少标识符")?;
         let i32_type = ir_session.context.i32_type();
-        let key = ir_session.scope_stack.get_last_key().unwrap();
+        let key = ir_session.scope_stack.get_last_key().ok_or("作用域栈为空")?;
         for decl in const_def_iter {
             if decl.as_rule() == Rule::ConstInitVal {
-                let const_init = self.scan_const_init(decl, ir_session).unwrap();
+                let const_init = self.scan_const_init(decl, ir_session).ok_or("常量初始化失败")?;
                 // 分配空间
                 if key.is_global() {
                     let val = ir_session.module.add_global(i32_type, None, ident.as_str());
@@ -170,6 +183,7 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     fn scan_const_init<'ctx>(
@@ -188,7 +202,7 @@ impl<'a> Scanner<'a> {
         panic!("error const_init_val");
     }
 
-    fn scan_var_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_var_decl<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let var_decl_iter = Self::skip_in(pair);
         let mut var_defs = Vec::<Pair<'_, Rule>>::new();
         for rule in var_decl_iter {
@@ -197,18 +211,19 @@ impl<'a> Scanner<'a> {
             }
         }
         for def in var_defs {
-            self.scan_var_def(def, ir_session);
+            self.scan_var_def(def, ir_session)?;
         }
+        Ok(())
     }
 
-    fn scan_var_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_var_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let mut var_def_iter = Self::skip_in(pair);
-        let ident = var_def_iter.next().unwrap();
+        let ident = var_def_iter.next().ok_or("变量定义缺少标识符")?;
         let i32_type = ir_session.context.i32_type();
-        let key = ir_session.scope_stack.get_last_key().unwrap();
+        let key = ir_session.scope_stack.get_last_key().ok_or("作用域栈为空")?;
         for def in var_def_iter {
             if def.as_rule() == Rule::InitVal {
-                let const_init = self.scan_init_val(def, ir_session).unwrap();
+                let const_init = self.scan_init_val(def, ir_session).ok_or("变量初始化失败")?;
                 // 分配空间
                 if key.is_global() {
                     let val = ir_session.module.add_global(i32_type, None, ident.as_str());
@@ -233,6 +248,7 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     fn scan_init_val<'ctx>(
@@ -250,7 +266,7 @@ impl<'a> Scanner<'a> {
         panic!("error init_val");
     }
 
-    fn scan_func_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) {
+    fn scan_func_def<'ctx>(&self, pair: Pair<'_, Rule>, ir_session: &mut IrSession<'ctx>) -> Result<(), String> {
         let mut func_def_iter = Self::skip_in(pair);
         let func_type = Self::skip_in(func_def_iter.next().unwrap()).next().unwrap();
         let func_name = func_def_iter.next().unwrap();
@@ -342,10 +358,18 @@ impl<'a> Scanner<'a> {
 
         if let Some(bb) = ir_session.builder.get_insert_block() {
             if !bb.get_terminator().is_some() {
-                ir_session.builder.build_return(None).unwrap();
+                if fn_ret_type.is_some() {
+                    // 有返回值的函数，返回0
+                    let zero = ir_session.context.i32_type().const_int(0, false);
+                    ir_session.builder.build_return(Some(&zero)).unwrap();
+                } else {
+                    // void函数
+                    ir_session.builder.build_return(None).unwrap();
+                }
             }
         }
         ir_session.scope_stack.pop();
+        Ok(())
     }
 
     fn scan_block_item<'ctx>(
@@ -797,42 +821,47 @@ impl<'a> Scanner<'a> {
         ir_session: &mut IrSession<'ctx>,
     ) -> Option<IntValue<'ctx>> {
         let mut call_exp_iter = Self::skip_in(call_exp);
-        let call_name = call_exp_iter.next().unwrap().as_str();
-        let params = call_exp_iter.skip(1).next().unwrap();
+        let call_name = call_exp_iter.next()?.as_str();
+        let params = call_exp_iter.skip(1).next()?;
+        
         let function = {
-            let binding = ir_session.scope_stack.get(call_name).unwrap();
-            binding.get_function().unwrap().clone()
+            let binding = ir_session.scope_stack.get(call_name)?;
+            binding.get_function()?.clone()
         };
+        
         let mut result = None;
-        if params.as_rule() != Rule::FuncRParams {
-            let r = ir_session
-                .builder
-                .build_call(function, &[], call_name)
-                .unwrap()
-                .try_as_basic_value()
-                .left();
-            if r.is_some() {
-                result = Some(r.unwrap().into_int_value());
-            }
-        } else {
-            let mut param_exps = Vec::<BasicMetadataValueEnum<'ctx>>::new();
+        let mut param_exps = Vec::<BasicMetadataValueEnum<'ctx>>::new();
+        
+        if params.as_rule() == Rule::FuncRParams {
             let params_iter = Self::skip_in(params);
             for param in params_iter {
                 if param.as_rule() == Rule::Exp {
-                    let val = self.scan_exp(param, ir_session).unwrap();
+                    let val = self.scan_exp(param, ir_session)?;
                     param_exps.push(val.into());
                 }
             }
-            let r = ir_session
-                .builder
-                .build_call(function, &param_exps, call_name)
-                .unwrap()
-                .try_as_basic_value()
-                .left();
-            if r.is_some() {
-                result = Some(r.unwrap().into_int_value());
-            }
         }
+        
+        // 检查参数数量是否匹配
+        let expected_param_count = function.get_type().get_param_types().len();
+        let actual_param_count = param_exps.len();
+        
+        if expected_param_count != actual_param_count {
+            eprintln!("警告: 函数 {} 期望 {} 个参数，但提供了 {} 个", 
+                     call_name, expected_param_count, actual_param_count);
+        }
+        
+        let r = ir_session
+            .builder
+            .build_call(function, &param_exps, call_name)
+            .ok()?
+            .try_as_basic_value()
+            .left();
+            
+        if let Some(val) = r {
+            result = Some(val.into_int_value());
+        }
+        
         if function.get_type().get_return_type().is_none() {
             None
         } else {
@@ -863,9 +892,22 @@ impl<'a> Scanner<'a> {
         number: Pair<'_, Rule>,
         ir_session: &mut IrSession<'ctx>,
     ) -> Option<IntValue<'ctx>> {
-        let number = number.as_str().parse::<u64>().unwrap();
+        let number_str = number.as_str();
         let i32_type = ir_session.context.i32_type();
-        let result = i32_type.const_int(number, false);
+        
+        let value = if number_str.starts_with("0x") || number_str.starts_with("0X") {
+            // 十六进制
+            u64::from_str_radix(&number_str[2..], 16).ok()?
+        } else if number_str.starts_with("0") && number_str.len() > 1 {
+            // 八进制
+            u64::from_str_radix(&number_str[1..], 8).ok()?
+        } else {
+            // 十进制
+            number_str.parse::<u64>().ok()?
+        };
+        
+        // 转换为i32范围
+        let result = i32_type.const_int(value, false);
         Some(result)
     }
 
@@ -921,16 +963,17 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut l_or_exp_iter = Self::skip_in(l_or_exp);
         // 先处理第一个 LAndExp 作为初始值
-        let first = l_or_exp_iter.next().unwrap();
-        let mut result = self.scan_l_and_exp(first, ir_session).unwrap();
+        let first = l_or_exp_iter.next()?;
+        let mut result = self.scan_l_and_exp(first, ir_session)?;
         
-        // 处理后续的 OR 操作
+        // 处理后续的 OR 操作 - 简化实现
         for e in l_or_exp_iter {
             if e.as_rule() == Rule::LAndExp {
-                let res = self.scan_l_and_exp(e, ir_session).unwrap();
-                result = ir_session.builder.build_or(result, res, "or_tmp").unwrap();
+                let res = self.scan_l_and_exp(e, ir_session)?;
+                result = ir_session.builder.build_or(result, res, "or_tmp").ok()?;
             }
         }
+        
         Some(result)
     }
 
@@ -941,16 +984,17 @@ impl<'a> Scanner<'a> {
     ) -> Option<IntValue<'ctx>> {
         let mut l_and_exp_iter = Self::skip_in(l_and_exp);
         // 先处理第一个 EqExp 作为初始值
-        let first = l_and_exp_iter.next().unwrap();
-        let mut result = self.scan_eq_exp(first, ir_session).unwrap();
+        let first = l_and_exp_iter.next()?;
+        let mut result = self.scan_eq_exp(first, ir_session)?;
         
-        // 处理后续的 AND 操作
+        // 处理后续的 AND 操作 - 简化实现
         for e in l_and_exp_iter {
             if e.as_rule() == Rule::EqExp {
-                let res = self.scan_eq_exp(e, ir_session).unwrap();
-                result = ir_session.builder.build_and(result, res, "and_tmp").unwrap();
+                let res = self.scan_eq_exp(e, ir_session)?;
+                result = ir_session.builder.build_and(result, res, "and_tmp").ok()?;
             }
         }
+        
         Some(result)
     }
 

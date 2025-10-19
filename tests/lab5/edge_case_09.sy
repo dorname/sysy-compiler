@@ -1,0 +1,11 @@
+// 测试复杂条件表达式
+int main() {
+    int a = 5;
+    int b = 3;
+    int c = 7;
+    if (a > b && b < c || a == 5) {
+        return 1;
+    } else {
+        return 0;
+    }
+}

@@ -27,8 +27,18 @@ fn main() {
     let output = &args[2];
 
     // 读取输入文件
-    let input = fs::read_to_string(filename).expect("Failed to read file");
-    let scanner = Scanner::new(&input,output);
-    scanner.scan_collect();
+    let input = match fs::read_to_string(filename) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("读取文件失败: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    let scanner = Scanner::new(&input, output);
+    if let Err(e) = scanner.scan_collect() {
+        eprintln!("编译错误: {}", e);
+        std::process::exit(1);
+    }
 
 }
