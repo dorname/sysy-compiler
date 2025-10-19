@@ -569,20 +569,14 @@ impl<'a> Scanner<'a> {
         let if_next = ir_session.context.append_basic_block(function, "if_next");
         let mut if_iter = if_iter.skip(2);
         let cond = if_iter.next().unwrap();
-        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
-        // 将整数条件转换为布尔值用于分支
-        let bool_cond = ir_session.builder.build_int_compare(
-            IntPredicate::NE, cond_val, ir_session.context.i32_type().const_int(0, false), "if_cond"
-        ).unwrap();
         let _ = if_iter.next();
         let stmt = if_iter.next().unwrap();
         if let Some(els) = if_iter.next()
             && els.as_rule() == Rule::Else
         {
             let if_false = ir_session.context.append_basic_block(function, "if_false");
-            let _ = ir_session
-                .builder
-                .build_conditional_branch(bool_cond, if_true, if_false);
+            // 使用真正的短路求值
+            self.scan_cond_with_targets(cond, ir_session, if_true, if_false);
 
             // 更新作用域为 if_true块
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
@@ -615,9 +609,8 @@ impl<'a> Scanner<'a> {
             }
             ir_session.scope_stack.pop();
         } else {
-            let _ = ir_session
-                .builder
-                .build_conditional_branch(bool_cond, if_true, if_next);
+            // 使用真正的短路求值
+            self.scan_cond_with_targets(cond, ir_session, if_true, if_next);
             // 更新作用域为 if_true块
             ir_session.scope_stack.push(ScopeKey::InnerBlock(if_true));
             ir_session.builder.position_at_end(if_true); // 光标移动到if_true块末端
@@ -676,15 +669,8 @@ impl<'a> Scanner<'a> {
         ir_session
             .scope_stack
             .push(ScopeKey::InnerBlock(while_cond));
-        let cond_val = self.scan_cond_for_branch(cond, ir_session).unwrap();
-        // 将整数条件转换为布尔值用于分支
-        let bool_cond = ir_session.builder.build_int_compare(
-            IntPredicate::NE, cond_val, ir_session.context.i32_type().const_int(0, false), "while_cond"
-        ).unwrap();
-        // 构建分支
-        let _ = ir_session
-            .builder
-            .build_conditional_branch(bool_cond, while_body, while_next);
+        // 使用真正的短路求值
+        self.scan_cond_with_targets(cond, ir_session, while_body, while_next);
 
         // 出栈
         ir_session.scope_stack.pop();
@@ -1011,6 +997,19 @@ impl<'a> Scanner<'a> {
         Some(i32_result)
     }
 
+    /// 使用真正的短路求值处理条件表达式
+    fn scan_cond_with_targets<'ctx>(
+        &self,
+        cond_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+        true_block: BasicBlock<'ctx>,
+        false_block: BasicBlock<'ctx>,
+    ) {
+        let mut cond_exp_iter = Self::skip_in(cond_exp);
+        let l_or_exp = cond_exp_iter.next().unwrap();
+        self.scan_l_or_exp_with_targets(l_or_exp, ir_session, true_block, false_block);
+    }
+
     /// 专门用于分支条件的LOrExp扫描函数
     fn scan_l_or_exp_for_branch<'ctx>(
         &self,
@@ -1018,13 +1017,17 @@ impl<'a> Scanner<'a> {
         ir_session: &mut IrSession<'ctx>,
     ) -> Option<IntValue<'ctx>> {
         let mut l_or_exp_iter = Self::skip_in(l_or_exp);
-        // 先处理第一个 LAndExp 作为初始值
         let first = l_or_exp_iter.next()?;
-        let mut result = self.scan_l_and_exp_for_branch(first, ir_session)?;
+        let rest: Vec<_> = l_or_exp_iter.filter(|p| p.as_rule() == Rule::LAndExp).collect();
         
-        // 处理后续的 OR 操作
-        for e in l_or_exp_iter {
-            if e.as_rule() == Rule::LAndExp {
+        if rest.is_empty() {
+            // 没有OR操作，直接计算LAndExp
+            self.scan_l_and_exp_for_branch(first, ir_session)
+        } else {
+            // 处理多个OR操作，使用短路求值
+            let mut result = self.scan_l_and_exp_for_branch(first, ir_session)?;
+            
+            for e in rest {
                 let res = self.scan_l_and_exp_for_branch(e, ir_session)?;
                 // 将两个整数转换为布尔值进行比较
                 let left_bool = ir_session.builder.build_int_compare(
@@ -1038,9 +1041,44 @@ impl<'a> Scanner<'a> {
                 // 将布尔结果转换回i32
                 result = ir_session.builder.build_int_z_extend(or_result, ir_session.context.i32_type(), "or_result").unwrap().as_basic_value_enum().into_int_value();
             }
+            
+            Some(result)
         }
+    }
+
+    /// 使用真正的短路求值处理LOrExp
+    fn scan_l_or_exp_with_targets<'ctx>(
+        &self,
+        l_or_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+        true_block: BasicBlock<'ctx>,
+        false_block: BasicBlock<'ctx>,
+    ) {
+        let mut l_or_exp_iter = Self::skip_in(l_or_exp);
+        let first = l_or_exp_iter.next().unwrap();
+        let rest: Vec<_> = l_or_exp_iter.filter(|p| p.as_rule() == Rule::LAndExp).collect();
         
-        Some(result)
+        if rest.is_empty() {
+            // 没有OR操作，直接计算LAndExp
+            self.scan_l_and_exp_with_targets(first, ir_session, true_block, false_block);
+        } else {
+            // 短路OR：如果第一个为真，跳转到true_block，否则计算下一个
+            let function = ir_session.builder.get_insert_block().unwrap().get_parent().unwrap();
+            let mut next_block = ir_session.context.append_basic_block(function, "or_next");
+            
+            self.scan_l_and_exp_with_targets(first, ir_session, true_block, next_block);
+            
+            for (i, item) in rest.iter().enumerate() {
+                ir_session.builder.position_at_end(next_block);
+                if i < rest.len() - 1 {
+                    let new_next = ir_session.context.append_basic_block(function, "or_next");
+                    self.scan_l_and_exp_with_targets(item.clone(), ir_session, true_block, new_next);
+                    next_block = new_next;
+                } else {
+                    self.scan_l_and_exp_with_targets(item.clone(), ir_session, true_block, false_block);
+                }
+            }
+        }
     }
 
     /// 专门用于分支条件的LAndExp扫描函数
@@ -1073,6 +1111,71 @@ impl<'a> Scanner<'a> {
         }
         
         Some(result)
+    }
+
+    /// 使用真正的短路求值处理LAndExp
+    fn scan_l_and_exp_with_targets<'ctx>(
+        &self,
+        l_and_exp: Pair<'_, Rule>,
+        ir_session: &mut IrSession<'ctx>,
+        true_block: BasicBlock<'ctx>,
+        false_block: BasicBlock<'ctx>,
+    ) {
+        let mut l_and_exp_iter = Self::skip_in(l_and_exp);
+        let first = l_and_exp_iter.next().unwrap();
+        let rest: Vec<_> = l_and_exp_iter.filter(|p| p.as_rule() == Rule::EqExp).collect();
+        
+        if rest.is_empty() {
+            // 没有AND操作，直接计算EqExp
+            let value = self.scan_eq_exp_for_branch(first, ir_session).unwrap();
+            let i32_type = ir_session.context.i32_type();
+            let cond = ir_session.builder.build_int_compare(
+                IntPredicate::NE,
+                value,
+                i32_type.const_int(0, false),
+                "cond",
+            ).unwrap();
+            ir_session.builder.build_conditional_branch(cond, true_block, false_block).unwrap();
+        } else {
+            // 短路AND：如果第一个为假，跳转到false_block，否则计算下一个
+            let function = ir_session.builder.get_insert_block().unwrap().get_parent().unwrap();
+            let mut next_block = ir_session.context.append_basic_block(function, "and_next");
+            
+            let value = self.scan_eq_exp_for_branch(first, ir_session).unwrap();
+            let i32_type = ir_session.context.i32_type();
+            let cond = ir_session.builder.build_int_compare(
+                IntPredicate::NE,
+                value,
+                i32_type.const_int(0, false),
+                "cond",
+            ).unwrap();
+            ir_session.builder.build_conditional_branch(cond, next_block, false_block).unwrap();
+            
+            for (i, item) in rest.iter().enumerate() {
+                ir_session.builder.position_at_end(next_block);
+                if i < rest.len() - 1 {
+                    let new_next = ir_session.context.append_basic_block(function, "and_next");
+                    let value = self.scan_eq_exp_for_branch(item.clone(), ir_session).unwrap();
+                    let cond = ir_session.builder.build_int_compare(
+                        IntPredicate::NE,
+                        value,
+                        i32_type.const_int(0, false),
+                        "cond",
+                    ).unwrap();
+                    ir_session.builder.build_conditional_branch(cond, new_next, false_block).unwrap();
+                    next_block = new_next;
+                } else {
+                    let value = self.scan_eq_exp_for_branch(item.clone(), ir_session).unwrap();
+                    let cond = ir_session.builder.build_int_compare(
+                        IntPredicate::NE,
+                        value,
+                        i32_type.const_int(0, false),
+                        "cond",
+                    ).unwrap();
+                    ir_session.builder.build_conditional_branch(cond, true_block, false_block).unwrap();
+                }
+            }
+        }
     }
 
     /// 专门用于分支条件的EqExp扫描函数
