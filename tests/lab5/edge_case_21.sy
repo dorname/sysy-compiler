@@ -1,0 +1,18 @@
+// 测试全局变量和局部变量的复杂交互
+int global_var = 10;
+
+int func1(int x) {
+    int local_var = 5;
+    return global_var + local_var + x;
+}
+
+int func2() {
+    global_var = global_var + 1;
+    return global_var;
+}
+
+int main() {
+    int result = func1(3);
+    result = result + func2();
+    return result;
+}

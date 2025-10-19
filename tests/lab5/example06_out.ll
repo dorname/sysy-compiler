@@ -11,7 +11,9 @@ mainEntry:
 whileCond:                                        ; preds = %if_next, %mainEntry
   %a = load i32, i32* @a, align 4
   %cmp = icmp sle i32 %a, 0
-  br i1 %cmp, label %whileBody, label %whileNext
+  %cmp_i32 = zext i1 %cmp to i32
+  %cond = icmp ne i32 %cmp_i32, 0
+  br i1 %cond, label %whileBody, label %whileNext
 
 whileBody:                                        ; preds = %whileCond
   %a1 = load i32, i32* @a, align 4
@@ -22,11 +24,13 @@ whileBody:                                        ; preds = %whileCond
   store i32 %add_tmp, i32* @count, align 4
   %a2 = load i32, i32* @a, align 4
   %cmp3 = icmp slt i32 %a2, -20
-  br i1 %cmp3, label %if_true, label %if_next
+  %cmp_i324 = zext i1 %cmp3 to i32
+  %cond5 = icmp ne i32 %cmp_i324, 0
+  br i1 %cond5, label %if_true, label %if_next
 
 whileNext:                                        ; preds = %if_true, %whileCond
-  %count4 = load i32, i32* @count, align 4
-  ret i32 %count4
+  %count6 = load i32, i32* @count, align 4
+  ret i32 %count6
 
 if_true:                                          ; preds = %whileBody
   br label %whileNext

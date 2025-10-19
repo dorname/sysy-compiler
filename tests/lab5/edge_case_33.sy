@@ -1,0 +1,14 @@
+// 测试复杂的递归和条件
+int power(int base, int exp) {
+    if (exp == 0) {
+        return 1;
+    } else if (exp == 1) {
+        return base;
+    } else {
+        return base * power(base, exp - 1);
+    }
+}
+
+int main() {
+    return power(2, 4);
+}

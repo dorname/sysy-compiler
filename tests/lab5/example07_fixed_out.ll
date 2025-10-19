@@ -15,12 +15,8 @@ hanoiEntry:
   %auxiliary8 = alloca i32, align 4
   store i32 %auxiliary, i32* %auxiliary8, align 4
   %n9 = load i32, i32* %n2, align 4
-  %to_bool = icmp ne i32 %n9, 0
-  %bool_i32 = zext i1 %to_bool to i32
-  %eq_tmp = icmp eq i32 %bool_i32, 1
-  %eq_i32 = zext i1 %eq_tmp to i32
-  %cond = icmp ne i32 %eq_i32, 0
-  br i1 %cond, label %if_true, label %if_next
+  %eq_tmp = icmp eq i32 %n9, 1
+  br i1 %eq_tmp, label %if_true, label %if_next
 
 if_true:                                          ; preds = %hanoiEntry
   %count = load i32, i32* @count, align 4
