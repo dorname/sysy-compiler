@@ -462,10 +462,9 @@ impl<'a> Scanner<'a> {
         let mut l_val_iter = Self::skip_in(l_val);
         let ident = l_val_iter.next().unwrap();
         let re = ir_session.scope_stack.get(ident.as_str());
+        // 保持静默：不要在编译阶段输出调试信息到stderr
         if re.is_none() {
-            dbg!(ident.as_str());
-            dbg!(&ir_session.scope_stack.get_last_key());
-            dbg!(&ir_session.scope_stack);
+            // 输入保证正确，理论上不应出现；若出现，随后unwrap会触发并被上层捕获
         }
         let ty = ir_session.scope_stack.get(ident.as_str()).unwrap();
         if !ty.is_func() {
@@ -855,10 +854,8 @@ impl<'a> Scanner<'a> {
         let expected_param_count = function.get_type().get_param_types().len();
         let actual_param_count = param_exps.len();
         
-        if expected_param_count != actual_param_count {
-            eprintln!("警告: 函数 {} 期望 {} 个参数，但提供了 {} 个", 
-                     call_name, expected_param_count, actual_param_count);
-        }
+        // 为避免在Online Judge上向stderr输出，忽略参数数量不匹配的警告。
+        // LLVM会在调用处类型检查，如有问题将在验证阶段体现。
         
         let r = ir_session
             .builder
