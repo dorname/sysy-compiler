@@ -3,6 +3,8 @@
 
 mod utils;
 mod gen_llvm_ir;
+mod asm;
+mod register_strategy;
 
 use crate::gen_llvm_ir::*;
 use std::{env, fs};
