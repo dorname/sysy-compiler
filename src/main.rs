@@ -1,10 +1,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-mod utils;
 mod gen_llvm_ir;
-mod asm;
-mod register_strategy;
+mod riscv_codegen;
 
 use crate::gen_llvm_ir::*;
 use std::{env, fs};

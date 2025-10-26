@@ -6,7 +6,6 @@
 //! 2、作用域栈管理
 //! 3、符号表管理
 //! 4、LLVM-IR生成
-use crate::utils::{add_option_string, eq_option_string};
 use inkwell::IntPredicate;
 use inkwell::IntPredicate::{EQ, NE, SGE, SGT, SLE, SLT};
 use inkwell::basic_block::BasicBlock;
@@ -73,6 +72,40 @@ impl<'a> Scanner<'a> {
             ir_core: IrCore::new(),
         }
     }
+
+    pub fn scan_collect_asm(&self, asm_build_fn: fn(&IrSession,output: &str) -> Result<(), String>) -> Result<(), String> {
+        let mut pairs = match parse_file(self.input) {
+            Some(pairs) => pairs,
+            None => return Err("语法解析失败".to_string()),
+        };
+
+        // 处理文件头
+        let file_pair = pairs.next().ok_or("文件为空")?;
+        // 读取编译单元
+        let compilation_unit = file_pair.into_inner().next().ok_or("编译单元为空")?;
+        // 获取所有的声明
+        let declarations = compilation_unit.into_inner();
+
+        let mut ir_session = self.ir_core.start_session("module");
+
+        // 依次扫描声明并收集符号
+        for declaration in declarations {
+            if let Err(e) = self.scan_declaration(declaration, &mut ir_session) {
+                return Err(format!("声明解析错误: {}", e));
+            }
+        }
+
+        // 验证IR
+        if let Err(e) = ir_session.module.verify() {
+            return Err(format!("LLVM IR验证失败: {}", e));
+        }
+
+        // 输出asm.s
+        asm_build_fn(&ir_session,self.output)?;
+
+        Ok(())
+    }
+
     pub fn scan_collect(&self) -> Result<(), String> {
         let mut pairs = match parse_file(self.input) {
             Some(pairs) => pairs,
@@ -381,7 +414,7 @@ impl<'a> Scanner<'a> {
     ) {
         match block_item.as_rule() {
             Rule::Decl => {
-                self.scan_decl(block_item, ir_session);
+                let _ = self.scan_decl(block_item, ir_session);
             }
             Rule::Stmt => {
                 let stmt_iter = Self::skip_in(block_item);
@@ -1901,7 +1934,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example04.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1915,7 +1948,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example05.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1928,7 +1961,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example06.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
@@ -1941,7 +1974,7 @@ mod tests {
         let official_path = format!("{}{}", FILE_PATH, "example07.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
-        scanner.scan_collect();
+        let _ = scanner.scan_collect();
         
         // 比较执行结果
         compare_execution_results(&official_path, &out_path);
