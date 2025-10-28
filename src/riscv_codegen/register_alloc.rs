@@ -62,13 +62,14 @@ pub struct LinearScan {
 
 impl LinearScan {
     fn new() -> Self {
-        todo!()
+        let mut regs = Vec::<String>::new();
+        todo!();
     }
 }
 
 impl RegisterAllocator for LinearScan {
     fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,i32) { 
-        todo!()
+        todo!();
     }
 }
 
