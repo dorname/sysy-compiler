@@ -11,10 +11,7 @@ use crate::{
 };
 use clap::builder::Str;
 use inkwell::values::{BasicValueEnum, InstructionOpcode};
-use inkwell::{
-    module::Module,
-    values::{FunctionValue, GlobalValue, InstructionValue},
-};
+use inkwell::{module::Module, values::{FunctionValue, GlobalValue, InstructionValue}, IntPredicate};
 
 pub mod asm_builder;
 pub mod register_alloc;
@@ -63,7 +60,7 @@ pub fn parse_llvm_ir<'ctx>(ir_session: &IrSession<'ctx>, output: &str) {
 /// 保存变量位置映射和总栈大小，在第一遍和第二遍之间传递
 pub struct GenContext {
     var_locations: HashMap<String, Location>, // 变量名 -> 存储位置
-    stack_size: i32,                          // 总栈大小（从寄存器分配器获得）
+    stack_size: usize,                          // 总栈大小（从寄存器分配器获得）
     global_names: Vec<String>,                // 全局变量名列表（用于区分全局和局部）
     temp_val_num: usize
 }
@@ -92,7 +89,7 @@ impl GenContext {
 
     /// 设置寄存器分配结果（从分配器）
     /// 将分配器返回的字符串结果转换为VarLocation
-    pub fn record_alloca_vars(&mut self, allocation: HashMap<String, String>, stack_size: i32) {
+    pub fn record_alloca_vars(&mut self, allocation: HashMap<String, String>, stack_size: usize) {
         self.stack_size = stack_size; // 保存总栈大小
 
         for (var, loc_str) in allocation {
@@ -116,7 +113,7 @@ impl GenContext {
     }
 
     /// 获取总栈大小
-    pub fn get_stack_size(&self) -> i32 {
+    pub fn get_stack_size(&self) -> usize {
         self.stack_size
     }
 
@@ -309,7 +306,7 @@ fn build_function<'ctx>(
                 continue;
             }
 
-            // 2.4 收集指令的def（定义）和uses（使用）
+            // 2.4 收集指令的信息
             let val_name = get_value_name(&instruction);
             // 收集函数内部使用了哪些变量
             let uses = collect_uses(&instruction,&mut ctx);
@@ -326,7 +323,7 @@ fn build_function<'ctx>(
     let (allocations, stack_size) = alloctor.allocate(inner_vars, true);
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloca_vars(allocations, stack_size);
-  
+    println!("{:?}",ctx.var_locations);
     
 
     // ==========================================
@@ -347,6 +344,7 @@ fn build_function<'ctx>(
     } else {
         0
     };
+    // 避免生成 addi sp, sp, 0 无用指令
     if aligned_stack_size > 0 {
         asm_builder.emit_function_prologue(aligned_stack_size);
     }
@@ -513,14 +511,81 @@ fn get_basic_value_name(value: BasicValueEnum,ctx:&mut GenContext) -> String {
 
 /// 第二次遍历：生成指令代码
 fn generate_instruction(
-    _instruction: &InstructionValue,
-    _asm_builder: &mut AsmBuilder,
-    _ctx: &mut GenContext,
+    instruction: &InstructionValue,
+    asm_builder: &mut AsmBuilder,
+    ctx: &mut GenContext,
 ) {
     // TODO: 根据instruction类型生成相应代码
-    todo!("Implement instruction code generation")
+    match instruction.get_opcode() { 
+        InstructionOpcode::ICmp => {
+            // 汇编例子：
+            // %cmp = icmp sgt i32 %a1, 3
+            generate_icmp_instruction(instruction, asm_builder, ctx);
+        },
+        InstructionOpcode::Store => {
+            // 汇编例子：
+            // store i32 %a1, i32* %a0, align 4
+        },
+        InstructionOpcode::Add | InstructionOpcode::Sub | InstructionOpcode::Mul | InstructionOpcode::SDiv | InstructionOpcode::SRem => {
+            // 汇编例子：
+            // %add = add i32 %a1, 3
+            // %sub = sub i32 %a1, 3
+            // %mul = mul i32 %a1, 3
+            // %sdiv = sdiv i32 %a1, 3
+            // %srem = srem i32 %a1, 3
+        },
+        InstructionOpcode::Load => {
+            // 汇编例子：
+            // %a1 = load i32, i32* %a0, align 4
+        },
+        InstructionOpcode::Br => {
+            // 汇编例子：
+            // br label %label
+        },
+        InstructionOpcode::ZExt => {
+            // 汇编例子：
+            // %a1 = zext i1 %a0 to i32
+        },
+        InstructionOpcode::Return => {
+            // 汇编例子：
+            // ret i32 %a1
+        }
+        _ => {}
+    }
 }
 
+fn generate_icmp_instruction(instruction: &InstructionValue, asm_builder: &mut AsmBuilder, ctx: &mut GenContext) {
+    // %cmp = icmp sgt i32 %a1 => cmp
+    let name = get_value_name(instruction);
+    let lf_operand = instruction.get_operand(0);
+    let rt_operand = instruction.get_operand(1);
+    if let Some(predicate) = instruction.get_icmp_predicate()
+    && let Some(lft_e) = lf_operand
+    && let Some(rgt_e) = rt_operand
+    && let Some(lft_v) = lft_e.left()
+    && let Some(rgt_v) = rgt_e.left() {
+        match predicate {
+            // ==
+            IntPredicate::EQ => {
+                let lft_name = get_basic_value_name(lft_v, ctx);
+                let rgt_name = get_basic_value_name(rgt_v, ctx);
+                // 把左右值加载到寄存器中计算
+            }
+            // !=
+            IntPredicate::NE => {}
+            // >
+            IntPredicate::SGT => {}
+            // <
+            IntPredicate::SLT => {}
+            // >=
+            IntPredicate::SLE => {}
+            // <=
+            IntPredicate::SLE => {}
+            _ => {}
+        }
+    }
+    print!("操作{}", name);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,6 +604,15 @@ mod tests {
     fn test_example1() {
         let file_path = format!("{}{}", FILE_PATH, "example01.sy");
         let out_path = format!("{}{}", FILE_PATH, "example01.s");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let _ = generate_asm(&input, &out_path);
+    }
+
+    
+    #[test]
+    fn test_edge_case_03() {
+        let file_path = format!("{}{}", FILE_PATH, "edge_case_03.sy");
+        let out_path = format!("{}{}", FILE_PATH, "edge_case_03.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }

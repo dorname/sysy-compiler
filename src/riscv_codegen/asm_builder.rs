@@ -27,11 +27,11 @@ impl AsmBuilder {
    }
 
    /// 函数框架指令
-   pub fn emit_function_prologue(&mut self, stack_size: i32) {
+   pub fn emit_function_prologue(&mut self, stack_size: usize) {
     let _ = writeln!(self.buf, "  addi sp, sp, -{}", stack_size);  // 函数序言
    }
 
-   pub fn emit_function_epilogue(&mut self, stack_size: i32) {
+   pub fn emit_function_epilogue(&mut self, stack_size: usize) {
     let _ = writeln!(self.buf, "  addi sp, sp, {}", stack_size);  // 函数尾声
    }
 

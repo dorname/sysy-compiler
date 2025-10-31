@@ -40,7 +40,7 @@ impl InnerVar {
 pub enum Location { Reg(String), Stack(i32), Global(String) }
 
 pub trait RegisterAllocator {
-    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,i32);
+    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize);
 }
 
 
@@ -49,8 +49,8 @@ pub trait RegisterAllocator {
 pub struct NoAlloc;
 
 impl RegisterAllocator for NoAlloc {
-    fn allocate(&mut self, allocation_names:Vec<InnerVar>)->(HashMap<String, String>,i32){
-        let mut stack_offset:i32 = 0;
+    fn allocate(&mut self, allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize){
+        let mut stack_offset:usize = 0;
         let mut allocation_map = HashMap::<String, String>::new();
         for local_val in allocation_names {
             allocation_map.insert(local_val.get_name().clone(), stack_offset.to_string());
@@ -114,17 +114,34 @@ impl LinearScan {
     /// 没有寄存器可分配的溢出处理
     fn overflow_to_stack(&mut self,var: &InnerVar) {
         // 对比当前变量和活跃列表中结束时间最晚的变量，如果当前变量的结束时间大于最晚的变量，则溢出到栈上
-       
-        if let Some(max_end_offset) = self.active_vars.iter().map(|v| v.get_end_offset()).max()
-        && var.get_end_offset() < max_end_offset {
-            // 
+        if let Some(max_var) = self.active_vars.last().cloned(){
+            if max_var.get_end_offset() >= var.get_start_offset() {
+                // max_var 溢出到栈
+                self.put_in_stack(&max_var);
+                self.active_vars.remove(&max_var);
+                let reg = self.reg_to_var.get(max_var.get_name()).unwrap();
+                // var 加入栈帧
+                self.active_vars.insert(var.clone());
+                self.reg_to_var.insert(var.get_name().clone(),reg.clone());
+            }else {
+                // var 溢出到栈
+                self.put_in_stack(var);
+            }
         }
-       
+    }
+
+    /// 栈分配
+    fn put_in_stack(&mut self,var: &InnerVar) {
+        self.reg_to_var.insert(
+            var.get_name().clone(),
+            format!("{}(sp)", self.stack_offset),
+        );
+        self.stack_offset += 4;
     }
 }
 
 impl RegisterAllocator for LinearScan {
-    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,i32) { 
+    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize) { 
         let mut allocation_names = allocation_names.clone();
         // 根据起始区间进行排序
         allocation_names.sort_by_key(|v| v.get_start_offset());
@@ -135,7 +152,8 @@ impl RegisterAllocator for LinearScan {
             self.clear_inactive_vars(&var);
             // 如果现在空闲的寄存器没有了，则需要考虑是否溢出到栈上
             if self.regs.is_empty() {
-                todo!("判断是否溢出到站上")
+                // 判断是否要溢出到栈上
+                self.overflow_to_stack(&var);
             }else {
                 // 分配寄存器
                 let reg = self.regs.pop().unwrap();
@@ -144,8 +162,7 @@ impl RegisterAllocator for LinearScan {
             }
         }
         // 计算栈的总量
-        // todo!("计算栈的总量");
-        (self.reg_to_var.clone(),0)
+        (self.reg_to_var.clone(),self.stack_offset)
     }
 }
 
@@ -154,7 +171,7 @@ impl RegisterAllocator for LinearScan {
 pub struct AllocatedInnerVar;
 
 impl AllocatedInnerVar {
-    pub fn allocate(&self,inner_vars:Vec<InnerVar>,only_stack:bool)->(HashMap<String, String>,i32) {
+    pub fn allocate(&self,inner_vars:Vec<InnerVar>,only_stack:bool)->(HashMap<String, String>,usize) {
         if only_stack {
             let mut allocator = NoAlloc::default();
             allocator.allocate(inner_vars)
