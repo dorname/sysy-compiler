@@ -53,7 +53,7 @@ impl RegisterAllocator for NoAlloc {
         let mut stack_offset:usize = 0;
         let mut allocation_map = HashMap::<String, String>::new();
         for local_val in allocation_names {
-            allocation_map.insert(local_val.get_name().clone(), stack_offset.to_string());
+            allocation_map.insert(local_val.get_name().clone(), format!("{}(sp)", stack_offset));
             // 因为当前SysY只考虑int类型，一个int是4个字节，所以每次加4
             stack_offset += 4;
         }
@@ -93,6 +93,27 @@ impl LinearScan {
         }
 
         Self { regs, active_vars: BTreeSet::new(), reg_to_var: HashMap::new(), stack_offset: 0 }
+    }
+
+    fn pop_reg(&mut self) -> Option<String> {
+        
+        // 优先级1：查找并弹出 t 类型寄存器
+        if let Some(pos) = self.regs.iter().position(|r| r.starts_with('t')) {
+            return Some(self.regs.remove(pos));
+        }
+        
+        // 优先级2：查找并弹出 s 类型寄存器
+        if let Some(pos) = self.regs.iter().position(|r| r.starts_with('s')) {
+            return Some(self.regs.remove(pos));
+        }
+        
+        // 优先级3：查找并弹出 a 类型寄存器
+        if let Some(pos) = self.regs.iter().position(|r| r.starts_with('a')) {
+            return Some(self.regs.remove(pos));
+        }
+        
+        // 没有可用寄存器
+        None
     }
 
     fn clear_inactive_vars(&mut self,var: &InnerVar) {
@@ -155,8 +176,8 @@ impl RegisterAllocator for LinearScan {
                 // 判断是否要溢出到栈上
                 self.overflow_to_stack(&var);
             }else {
-                // 分配寄存器
-                let reg = self.regs.pop().unwrap();
+                // 分配寄存器（按优先级：t > s > a）
+                let reg = self.pop_reg().unwrap();
                 self.active_vars.insert(var.clone());
                 self.reg_to_var.insert(var.get_name().clone(),reg);
             }
