@@ -7,8 +7,7 @@ mod riscv_codegen;
 use crate::gen_llvm_ir::*;
 use std::{env, fs};
 use std::io::{stderr, stdout};
-
-
+use crate::riscv_codegen::generate_asm;
 
 fn main() {
     // 收集命令行参数
@@ -34,11 +33,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    
-    let scanner = Scanner::new(&input, output);
-    if let Err(e) = scanner.scan_collect() {
-        eprintln!("编译错误: {}", e);
-        std::process::exit(1);
-    }
 
+    let _ = generate_asm(&input, &output);
 }

@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::riscv_codegen::GenContext;
+use crate::riscv_codegen::register_alloc::Location::Reg;
 
 #[derive(Clone, Debug,PartialEq,Eq)]
 pub struct InnerVar{
@@ -39,6 +40,16 @@ impl InnerVar {
 #[derive(Clone, Debug)]
 pub enum Location { Reg(String), Stack(i32), Global(String) }
 
+impl Location {
+    pub fn get_name(&self) -> String {
+        match self {
+            Reg(name) => name.to_string(),
+            Location::Stack(stack_offset) => stack_offset.to_string(),
+            Location::Global(name) => name.to_string(),
+        }
+    }
+}
+
 pub trait RegisterAllocator {
     fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize);
 }
@@ -61,7 +72,7 @@ impl RegisterAllocator for NoAlloc {
     }
 }
 
-#[derive(Clone, Default,Debug)]
+#[derive(Clone, Default)]
 pub struct LinearScan {
     // 空闲的寄存器池
     regs: Vec<String>,
@@ -78,7 +89,10 @@ impl LinearScan {
         let mut regs = Vec::<String>::new();
             
         // 1. 首先添加临时寄存器（最优先）
-        for i in 0..=6 {
+        // t0、t1、t2用来作为运算
+        // t0、t1 用来加载操作数
+        // t2 用来存储结果
+        for i in 3..=6 {
             regs.push(format!("t{}", i));
         }
         
@@ -197,7 +211,7 @@ impl AllocatedInnerVar {
             let mut allocator = NoAlloc::default();
             allocator.allocate(inner_vars)
         } else {
-            let mut allocator = LinearScan::default();
+            let mut allocator = LinearScan::new();
             allocator.allocate(inner_vars)
         }
     }

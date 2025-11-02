@@ -73,10 +73,10 @@ impl AsmBuilder {
    /// 内存访问指令
 
    pub fn emit_lw(&mut self, dest: &str, offset: i32, base: &str) {
-    let _ = writeln!(self.buf, "  lw {}, {}, {}", dest, offset, base);  // 从内存加载字
+    let _ = writeln!(self.buf, "  lw {}, {}({})", dest, offset, base);  // 从内存加载数据
    }
    pub fn emit_sw(&mut self, src: &str, offset: i32, base: &str) {
-    let _ = writeln!(self.buf, "  sw {}, {}, {}", src, offset, base);  // 存储字到内存
+    let _ = writeln!(self.buf, "  sw {}, {}({})", src, offset, base);  // 存储数据到内存
    }
 
    /// 比较和分支指令
@@ -100,6 +100,29 @@ impl AsmBuilder {
     let _ = writeln!(self.buf, "  bge {}, {}, {}", src1, src2, label);  // 大于等于比较分支 
    }
 
+    pub fn emit_sgt(&mut self, src1: &str, src2: &str, src3: &str) {
+        let _ = writeln!(self.buf, "  sgt {}, {}, {}", src1, src2, src3);
+    }
+
+    pub fn emit_seqz(&mut self,src1: &str, src2: &str) {
+        let _ = writeln!(self.buf, "  seqz {}, {}", src1, src2);
+    }
+
+    pub fn emit_snez(&mut self,src1: &str, src2: &str) {
+        let _ = writeln!(self.buf, "  snez {}, {}", src1, src2);
+    }
+    pub fn emit_slt(&mut self, src1: &str, src2: &str, src3: &str) {
+        let _ = writeln!(self.buf, "  slt {}, {}, {}", src1, src2, src3);
+    }
+
+    pub fn emit_sle(&mut self, src1: &str, src2: &str, src3: &str) {
+        let _ = writeln!(self.buf, "  sle {}, {}, {}", src1, src2, src3);
+    }
+
+
+    pub fn emit_sge(&mut self, src1: &str, src2: &str, src3: &str) {
+        let _ = writeln!(self.buf, "  sge {}, {}, {}", src1, src2, src3);
+    }
    /// 跳转指令
    pub fn emit_j(&mut self, label: &str) {
     let _ = writeln!(self.buf, "  j {}", label); // 无条件跳转
