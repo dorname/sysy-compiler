@@ -335,6 +335,21 @@ fn build_function<'ctx>(
     let (allocations, stack_size) = alloctor.allocate(inner_vars, false);
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloca_vars(allocations, stack_size);
+    
+    // 步骤5：为alloca变量（指针）分配栈位置
+    // alloca变量本身（指针）需要在栈上分配位置，即使它们没有在活跃区间中
+    let mut alloca_stack_offset = ctx.stack_size as i32;
+    for alloca_name in state.get_allocation_names() {
+        // 如果alloca变量还没有被分配location，为它分配栈位置
+        if ctx.get_location(&alloca_name).is_none() {
+            ctx.var_locations.insert(alloca_name.clone(), Location::Stack(alloca_stack_offset));
+            alloca_stack_offset += 4; // 每个alloca变量占用4字节（指针大小）
+        }
+    }
+    // 更新栈大小以包含alloca变量
+    if alloca_stack_offset > ctx.stack_size as i32 {
+        ctx.stack_size = alloca_stack_offset as usize;
+    }
 
     // ==========================================
     // 汇编生成阶段
@@ -793,51 +808,73 @@ fn generate_load_instruction(
 ) {
     // %a1 = load i32, i32* %a0, align 4
     let ptr_operand = instruction.get_operand(0);
-    if let Some(ptr_e) = ptr_operand
-        && let Some(ptr) = ptr_e.left()
-    {
-        let ptr_name = get_basic_value_name(ptr, ctx);
-        let result_name = get_value_name(instruction);
-        
-        // 获取结果寄存器
-        let result_reg = if let Some(result_loc) = ctx.get_location(&result_name) {
-            match result_loc {
-                Location::Reg(reg) => reg.to_string(),
-                _ => "t0".to_string(),
+    let ptr_name = if let Some(ptr_e) = ptr_operand {
+        // 尝试用right()获取PointerValue（load指令的指针操作数应该是指针类型）
+        if let Some(ptr_value) = ptr_e.right() {
+            // 指针类型，直接获取名称
+            if let Ok(name_str) = ptr_value.get_name().to_str() {
+                name_str.to_string()
+            } else {
+                return; // 无法获取指针名称，跳过
             }
         } else {
-            "t0".to_string()
-        };
-        
-        // 根据指针类型处理
-        if ctx.is_global(&ptr_name) {
-            // 全局变量：la + lw
-            asm_builder.emit_la("t0", &ptr_name);
-            asm_builder.emit_lw(&result_reg, 0, "t0");
-        } else {
-            // 栈变量或寄存器中的指针
-            let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
-                Location::Reg(reg) => (Some(reg.clone()), None),
-                Location::Stack(sp_offset) => (None, Some(*sp_offset)),
-                _ => (None, None),
-            });
-            
-            if let Some((reg_opt, sp_offset_opt)) = loc_type {
-                if let Some(ptr_reg) = reg_opt {
-                    // 从寄存器中的指针加载
-                    asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
-                } else if let Some(sp_offset) = sp_offset_opt {
-                    // 从栈变量加载
-                    asm_builder.emit_lw(&result_reg, sp_offset, "sp");
-                }
-            }
+            return; // load指令的指针操作数必须是指针类型，无法获取则跳过
         }
+    } else {
+        return; // 没有操作数，跳过
+    };
+    
+    let result_name = get_value_name(instruction);
         
-        // 如果结果在栈中，需要存储
-        if let Some(result_loc) = ctx.get_location(&result_name) {
-            if let Location::Stack(offset) = result_loc {
-                asm_builder.emit_sw(&result_reg, *offset, "sp");
+    // 获取结果寄存器
+    let result_reg = if let Some(result_loc) = ctx.get_location(&result_name) {
+        match result_loc {
+            Location::Reg(reg) => reg.to_string(),
+            _ => "t0".to_string(),
+        }
+    } else {
+        "t0".to_string()
+    };
+    
+    // 根据指针类型处理
+    if ctx.is_global(&ptr_name) {
+        // 全局变量：la + lw
+        asm_builder.emit_la("t0", &ptr_name);
+        asm_builder.emit_lw(&result_reg, 0, "t0");
+    } else {
+        // 栈变量或寄存器中的指针
+        let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
+            Location::Reg(reg) => (Some(reg.clone()), None),
+            Location::Stack(sp_offset) => (None, Some(*sp_offset)),
+            _ => (None, None),
+        });
+        
+        if let Some((reg_opt, sp_offset_opt)) = loc_type {
+            if let Some(ptr_reg) = reg_opt {
+                // 从寄存器中的指针加载
+                asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
+            } else if let Some(sp_offset) = sp_offset_opt {
+                // 从栈变量加载（alloca变量）
+                // alloca变量（指针）存储在栈偏移sp_offset处
+                // 我们需要：
+                // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
+                // 2. 然后使用指针值加载数据：lw result_reg, 0(ptr_reg)
+                let ptr_reg = "t1";  // 临时寄存器，用于存放指针值
+                asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
+                asm_builder.emit_lw(&result_reg, 0, ptr_reg);   // 使用指针值加载数据
             }
+        } else {
+            // 如果找不到location，说明该指针变量未被分配
+            // 这可能是alloca变量没有在活跃区间中，应该已经在步骤5中分配了栈位置
+            // 如果不是alloca变量，尝试从指针值计算地址
+            // 这种情况不应该发生在正确的LLVM IR中，但为了健壮性，我们跳过这条指令
+        }
+    }
+    
+    // 如果结果在栈中，需要存储
+    if let Some(result_loc) = ctx.get_location(&result_name) {
+        if let Location::Stack(offset) = result_loc {
+            asm_builder.emit_sw(&result_reg, *offset, "sp");
         }
     }
 }
@@ -1422,35 +1459,60 @@ fn generate_store_instruction(
     // store i32 %a1, i32* %a0, align 4
     let from_operand = instruction.get_operand(0);
     let to_operand = instruction.get_operand(1);
-    if let Some(from_e) = from_operand
+    let (from, ptr_name) = if let Some(from_e) = from_operand
         && let Some(to_e) = to_operand
         && let Some(from) = from_e.left()
-        && let Some(to) = to_e.left() {
-       let ptr = get_basic_value_name(to,ctx);
-        if ctx.is_global(&ptr) {
-            // lw t0 ()sp / la t0 a1 lw t0 0(t0)
-            let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-            // la t2 a0 把 a0 地址读到寄存器
-            asm_builder.emit_la("t2",&ptr);
-            // sw t0 0(t2) 把寄存器 t0 中的值，存入内存地址 [t2 + 0] 处。
-            asm_builder.emit_sw(&from_reg,0,"t2");
-        }else {
-            // 存储到寄存器/或者栈中
-            let loc_type = ctx.get_location(&ptr).map(|loc| match loc {
-                Location::Reg(reg) => (Some(reg.clone()), None),
-                Location::Stack(sp_offset) => (None, Some(*sp_offset)),
-                _ => (None, None),
-            });
-            
-            if let Some((reg_opt, sp_offset_opt)) = loc_type {
-                if let Some(reg) = reg_opt {
-                    load_value_to_reg(from,ctx,&reg,asm_builder);
-                } else if let Some(sp_offset) = sp_offset_opt {
-                    let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-                    asm_builder.emit_sw(&from_reg,sp_offset,"sp");
-                }
+    {
+        // 获取指针操作数：尝试用right()获取PointerValue（store指令的指针操作数应该是指针类型）
+        let ptr_name = if let Some(ptr_value) = to_e.right() {
+            // 指针类型，直接获取名称
+            if let Ok(name_str) = ptr_value.get_name().to_str() {
+                name_str.to_string()
+            } else {
+                return; // 无法获取指针名称，跳过
+            }
+        } else if let Some(to) = to_e.left() {
+            // 如果不是指针类型，尝试用left()获取BasicValueEnum
+            get_basic_value_name(to, ctx)
+        } else {
+            return; // 无法获取操作数，跳过
+        };
+        (from, ptr_name)
+    } else {
+        return; // 没有操作数，跳过
+    };
+    
+    if ctx.is_global(&ptr_name) {
+        // lw t0 ()sp / la t0 a1 lw t0 0(t0)
+        let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
+        // la t2 a0 把 a0 地址读到寄存器
+        asm_builder.emit_la("t2",&ptr_name);
+        // sw t0 0(t2) 把寄存器 t0 中的值，存入内存地址 [t2 + 0] 处。
+        asm_builder.emit_sw(&from_reg,0,"t2");
+    } else {
+        // 存储到寄存器/或者栈中
+        let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
+            Location::Reg(reg) => (Some(reg.clone()), None),
+            Location::Stack(sp_offset) => (None, Some(*sp_offset)),
+            _ => (None, None),
+        });
+        
+        if let Some((reg_opt, sp_offset_opt)) = loc_type {
+            if let Some(reg) = reg_opt {
+                load_value_to_reg(from,ctx,&reg,asm_builder);
+            } else if let Some(sp_offset) = sp_offset_opt {
+                // 存储到栈变量（alloca变量）
+                // alloca变量（指针）存储在栈偏移sp_offset处
+                // 我们需要：
+                // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
+                // 2. 然后将源值存储到指针指向的位置：sw from_reg, 0(ptr_reg)
+                let ptr_reg = "t2";  // 临时寄存器，用于存放指针值
+                asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
+                let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
+                asm_builder.emit_sw(&from_reg, 0, ptr_reg);      // 使用指针值存储数据
             }
         }
+        // 如果找不到location，说明该指针变量未被分配，这不应该发生在正确的LLVM IR中
     }
 }
 

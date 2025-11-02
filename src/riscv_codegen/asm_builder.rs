@@ -36,7 +36,8 @@ impl AsmBuilder {
    }
 
    pub fn emit_exit_syscall(&mut self) {
-    let _ = writeln!(self.buf, "  li a7, 93; ecall");  // 退出系统调用
+    let _ = writeln!(self.buf, "  li a7, 93");  // 设置系统调用号
+    let _ = writeln!(self.buf, "  ecall");  // 执行系统调用
    }
 
    /// 立即数加载指令
