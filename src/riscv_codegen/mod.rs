@@ -152,7 +152,8 @@ impl FunctionState {
 
     /// 添加指令的信息(指令索引,指令名称，使用的操作数集合)
     pub fn record_instruction(&mut self, idx: usize, val_name: String, uses: Vec<String>) {
-        if !val_name.is_empty() && !uses.is_empty() {
+        // 记录所有有定义的指令，即使uses为空（用于计算活跃区间）
+        if !val_name.is_empty() {
             self.instructions.push((idx, val_name, uses));
         }
     }
@@ -329,12 +330,11 @@ fn build_function<'ctx>(
     // 步骤3：计算活跃区间
     let inner_vars = state.compute_liveness();
     // 步骤4：执行寄存器分配
+    // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
     let alloctor = AllocatedInnerVar::default();
     let (allocations, stack_size) = alloctor.allocate(inner_vars, false);
     // 记录变量分配好的存储位置和预计使用的栈空间
-    println!("{:?}", allocations);
     ctx.record_alloca_vars(allocations, stack_size);
-    println!("{:?}", ctx.var_locations);
 
     // ==========================================
     // 汇编生成阶段
@@ -374,8 +374,6 @@ fn build_function<'ctx>(
         }
     }
 
-    // 步骤4：输出汇编代码（调试用）
-    println!("{}", asm_builder.emit());
 }
 
 /// 检测循环检测
@@ -955,7 +953,7 @@ fn generate_br_instruction(
                 
                 // 在 RISC-V 中，非零值表示 true，零值表示 false
                 // 使用 bne 检查条件是否为非零（true）
-                asm_builder.emit_bne(&cond_reg, "zero", true_label);
+                asm_builder.emit_bne(&cond_reg, "x0", true_label);
                 // 如果条件为 false（零），跳转到 false 分支
                 asm_builder.emit_j(false_label);
             }
@@ -1588,7 +1586,7 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
     if is_constant(input)
         && let Some(val) = input.into_int_value().get_zero_extended_constant(){
         if val == 0 {
-            return "zero".to_string();
+            return "x0".to_string();
         }
         asm_builder.emit_li(reg_name,val as i32);
         return reg_name.to_string();
@@ -1616,7 +1614,7 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
             }
         }
     }
-    "zero".to_string()
+    "x0".to_string()
 }
 
 
@@ -1627,7 +1625,7 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,a
     if is_constant(input)
         && let Some(val) = input.into_int_value().get_zero_extended_constant(){
         if val == 0 {
-            asm_builder.emit_mv(reg_name,"zero");
+            asm_builder.emit_mv(reg_name,"x0");
             return;
         }
         asm_builder.emit_li(reg_name,val as i32);
@@ -1637,7 +1635,7 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,a
     //不是立即数而
     let reg_key =  get_basic_value_name(input, ctx);
     if reg_key.starts_with("tmp_") {
-        asm_builder.emit_mv(reg_name,"zero");
+        asm_builder.emit_mv(reg_name,"x0");
         return;
     }
     if let Some(location) = ctx.get_location(&reg_key) {
@@ -1660,7 +1658,7 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,a
             }
         }
     }else {
-        asm_builder.emit_mv(reg_name,"zero");
+        asm_builder.emit_mv(reg_name,"x0");
     }
 }
 #[cfg(test)]
