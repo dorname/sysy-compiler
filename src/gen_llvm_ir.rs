@@ -254,8 +254,10 @@ impl<'a> Scanner<'a> {
         let ident = var_def_iter.next().ok_or("变量定义缺少标识符")?;
         let i32_type = ir_session.context.i32_type();
         let key = ir_session.scope_stack.get_last_key().ok_or("作用域栈为空")?;
+        let mut has_init_val = false;
         for def in var_def_iter {
             if def.as_rule() == Rule::InitVal {
+                has_init_val = true;
                 let const_init = self.scan_init_val(def, ir_session).ok_or("变量初始化失败")?;
                 // 分配空间
                 if key.is_global() {
@@ -279,6 +281,30 @@ impl<'a> Scanner<'a> {
                     let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
                     scope.insert(ident.as_str().to_string(), Type::LocalVar(val));
                 }
+            }
+        }
+        // 如果没有初始化值，仍然需要分配空间并加入符号表（全局变量初始化为0，局部变量不初始化）
+        if !has_init_val {
+            if key.is_global() {
+                let val = ir_session.module.add_global(i32_type, None, ident.as_str());
+                // 全局变量未初始化时，初始化为0
+                let zero = i32_type.const_int(0, false);
+                val.set_initializer(&zero);
+                // 加入符号表
+                let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                scope.insert(
+                    ident.as_str().to_string(),
+                    Type::GlobalVar(val.as_pointer_value()),
+                );
+            } else {
+                // 局部变量未初始化时，仍然需要分配空间（虽然值为未定义）
+                let val = ir_session
+                    .builder
+                    .build_alloca(i32_type, ident.as_str())
+                    .unwrap();
+                // 加入符号表
+                let scope = ir_session.scope_stack.get_current_scope_mut().unwrap();
+                scope.insert(ident.as_str().to_string(), Type::LocalVar(val));
             }
         }
         Ok(())
