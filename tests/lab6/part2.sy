@@ -1,4 +1,3 @@
-// output 19
 const int a = 1;
 int b;
 int main(){

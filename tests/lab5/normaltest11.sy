@@ -1,5 +1,0 @@
-int gg=5;
-int main(){
-const int b = 12;
-return b * gg;
-}

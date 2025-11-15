@@ -1,6 +1,0 @@
-// 测试八进制和十六进制常量
-int main() {
-    int oct = 010;  // 八进制10 = 十进制8
-    int hex = 0x1A; // 十六进制1A = 十进制26
-    return oct + hex;
-}

@@ -17,7 +17,7 @@ impl AsmBuilder {
     let _ = writeln!(self.buf, "  .text");  // 代码段
    }
    pub fn emit_global_symbol(&mut self, symbol: &str) {
-    let _ = writeln!(self.buf, "  .global {}", symbol);  // 全局符号表
+    let _ = writeln!(self.buf, "  .globl  {}", symbol);  // 全局符号表
    }
    pub fn emit_label(&mut self, label: &str) {
     let _ = writeln!(self.buf, "{}:", label);  // 标签
