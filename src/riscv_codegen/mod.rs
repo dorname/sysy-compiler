@@ -68,16 +68,44 @@ pub struct GenContext {
     stack_size: usize,                        // 总栈大小（从寄存器分配器获得）
     global_names: Vec<String>,                // 全局变量名列表（用于区分全局和局部）
     temp_val_num: usize,
+    alloca_names: HashSet<String>,           // alloca变量名集合（用于区分alloca变量和普通局部变量）
+    pure_stack_mode: bool,                   // 是否为纯栈分配模式
 }
 
 impl GenContext {
+    // 为了调试，添加访问alloca_names的方法
+    pub fn get_alloca_names(&self) -> &HashSet<String> {
+        &self.alloca_names
+    }
     pub fn new() -> Self {
         Self {
             var_locations: HashMap::new(),
             stack_size: 0,
             global_names: Vec::new(),
             temp_val_num: 0,
+            alloca_names: HashSet::new(),
+            pure_stack_mode: false,
         }
+    }
+    
+    /// 设置纯栈分配模式
+    pub fn set_pure_stack_mode(&mut self, enabled: bool) {
+        self.pure_stack_mode = enabled;
+    }
+    
+    /// 设置alloca变量集合
+    pub fn set_alloca_names(&mut self, alloca_names: HashSet<String>) {
+        self.alloca_names = alloca_names;
+    }
+    
+    /// 检查是否为alloca变量
+    /// 在纯栈分配模式下，alloca变量应该直接存储值，而不是存储指针
+    pub fn is_alloca(&self, name: &str) -> bool {
+        // 在纯栈分配模式下，所有变量都直接存储在栈上，不需要通过指针访问
+        if self.pure_stack_mode {
+            return false;
+        }
+        self.alloca_names.contains(name)
     }
 
     /// 注册全局变量到上下文
@@ -331,25 +359,44 @@ fn build_function<'ctx>(
     let inner_vars = state.compute_liveness();
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
+    let pure_stack_mode = true;  // Part2使用纯栈分配模式
     let alloctor = AllocatedInnerVar::default();
-    let (allocations, stack_size) = alloctor.allocate(inner_vars, true);
+    let (allocations, stack_size) = alloctor.allocate(inner_vars, pure_stack_mode);
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloca_vars(allocations, stack_size);
     
-    // 步骤5：为alloca变量（指针）分配栈位置
-    // alloca变量本身（指针）需要在栈上分配位置，即使它们没有在活跃区间中
+    // 设置纯栈分配模式标志
+    ctx.set_pure_stack_mode(pure_stack_mode);
+    
+    // 步骤5：为alloca变量分配栈位置（仅在纯栈分配模式下）
+    // 在纯栈分配模式下，alloca变量应该直接存储值，而不是存储指针
+    // 关键问题：alloca变量（如%c）在Store/Load指令中被使用，但它们的名称是alloca变量的名称
+    // 如果alloca变量已经在活跃区间中被分配了位置，应该使用那个位置
+    // 如果alloca变量没有在活跃区间中被分配，需要在步骤5中为它们分配位置
+    // 但是，在纯栈分配模式下，alloca变量应该使用它们在活跃区间中被分配的位置
+    // 而不是在步骤5中重新分配位置
+    
+    // 注意：alloca变量（如%c）在LLVM IR中是指针类型，但在纯栈分配模式下，
+    // Store和Load指令应该直接使用alloca变量的栈位置，而不是通过指针间接访问
+    
+    // 在纯栈分配模式下，alloca变量应该已经在活跃区间中被分配了位置
+    // 如果alloca变量没有在活跃区间中被分配，说明它没有被使用，不需要分配位置
+    // 但是，为了确保所有alloca变量都有位置，我们仍然检查并分配
     let mut alloca_stack_offset = ctx.stack_size as i32;
     for alloca_name in state.get_allocation_names() {
         // 如果alloca变量还没有被分配location，为它分配栈位置
         if ctx.get_location(&alloca_name).is_none() {
             ctx.var_locations.insert(alloca_name.clone(), Location::Stack(alloca_stack_offset));
-            alloca_stack_offset += 4; // 每个alloca变量占用4字节（指针大小）
+            alloca_stack_offset += 4; // 每个变量占用4字节
         }
     }
     // 更新栈大小以包含alloca变量
     if alloca_stack_offset > ctx.stack_size as i32 {
         ctx.stack_size = alloca_stack_offset as usize;
     }
+    
+    // 将alloca变量集合传递给GenContext，用于区分alloca变量和普通局部变量
+    ctx.set_alloca_names(state.get_allocation_names().clone());
 
     // ==========================================
     // 汇编生成阶段
@@ -819,7 +866,13 @@ fn generate_load_instruction(
                 return; // 无法获取指针名称，跳过
             }
         } else {
-            return; // load指令的指针操作数必须是指针类型，无法获取则跳过
+            // 如果不是指针类型，尝试用left()获取BasicValueEnum
+            // 这在某些情况下可能是必要的，比如指针值被传递为BasicValueEnum
+            if let Some(ptr_basic) = ptr_e.left() {
+                get_basic_value_name(ptr_basic, ctx)
+            } else {
+                return; // load指令的指针操作数必须是指针类型，无法获取则跳过
+            }
         }
     } else {
         return; // 没有操作数，跳过
@@ -855,20 +908,25 @@ fn generate_load_instruction(
                 // 从寄存器中的指针加载
                 asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
             } else if let Some(sp_offset) = sp_offset_opt {
-                // 从栈变量加载（alloca变量）
-                // alloca变量（指针）存储在栈偏移sp_offset处
-                // 我们需要：
-                // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
-                // 2. 然后使用指针值加载数据：lw result_reg, 0(ptr_reg)
-                let ptr_reg = "t1";  // 临时寄存器，用于存放指针值
-                asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
-                asm_builder.emit_lw(&result_reg, 0, ptr_reg);   // 使用指针值加载数据
+                // 需要区分alloca变量和普通局部变量
+                if ctx.is_alloca(&ptr_name) {
+                    // alloca变量（指针）存储在栈偏移sp_offset处
+                    // 我们需要：
+                    // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
+                    // 2. 然后使用指针值加载数据：lw result_reg, 0(ptr_reg)
+                    let ptr_reg = "t1";  // 临时寄存器，用于存放指针值
+                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
+                    asm_builder.emit_lw(&result_reg, 0, ptr_reg);   // 使用指针值加载数据
+                } else {
+                    // 普通局部变量：直接从栈偏移位置加载
+                    asm_builder.emit_lw(&result_reg, sp_offset, "sp");
+                }
             }
         } else {
             // 如果找不到location，说明该指针变量未被分配
-            // 这可能是alloca变量没有在活跃区间中，应该已经在步骤5中分配了栈位置
-            // 如果不是alloca变量，尝试从指针值计算地址
-            // 这种情况不应该发生在正确的LLVM IR中，但为了健壮性，我们跳过这条指令
+            // 在纯栈分配模式下，alloca变量应该已经在步骤5中分配了栈位置
+            // 但如果仍然找不到，可能是变量名映射问题
+            // 这种情况不应该发生在正确的LLVM IR中
         }
     }
     
@@ -1502,15 +1560,21 @@ fn generate_store_instruction(
             if let Some(reg) = reg_opt {
                 load_value_to_reg(from,ctx,&reg,asm_builder);
             } else if let Some(sp_offset) = sp_offset_opt {
-                // 存储到栈变量（alloca变量）
-                // alloca变量（指针）存储在栈偏移sp_offset处
-                // 我们需要：
-                // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
-                // 2. 然后将源值存储到指针指向的位置：sw from_reg, 0(ptr_reg)
-                let ptr_reg = "t2";  // 临时寄存器，用于存放指针值
-                asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
-                let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-                asm_builder.emit_sw(&from_reg, 0, ptr_reg);      // 使用指针值存储数据
+                // 需要区分alloca变量和普通局部变量
+                if ctx.is_alloca(&ptr_name) {
+                    // alloca变量（指针）存储在栈偏移sp_offset处
+                    // 我们需要：
+                    // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
+                    // 2. 然后将源值存储到指针指向的位置：sw from_reg, 0(ptr_reg)
+                    let ptr_reg = "t2";  // 临时寄存器，用于存放指针值
+                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
+                    let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
+                    asm_builder.emit_sw(&from_reg, 0, ptr_reg);      // 使用指针值存储数据
+                } else {
+                    // 普通局部变量：直接存储到栈偏移位置
+                    let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
+                    asm_builder.emit_sw(&from_reg, sp_offset, "sp");
+                }
             }
         }
         // 如果找不到location，说明该指针变量未被分配，这不应该发生在正确的LLVM IR中
@@ -1747,4 +1811,12 @@ mod tests {
         let _ = generate_asm(&input, &out_path);
     }
 
+    #[test]
+    fn test_ir() {
+        let file_path = format!("{}{}", FILE_PATH, "part2.sy");
+        let out_path = format!("{}{}", FILE_PATH, "part2.ll");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let scanner = Scanner::new(&input,&out_path);
+        let _ = scanner.scan_collect();
+    }
 }
