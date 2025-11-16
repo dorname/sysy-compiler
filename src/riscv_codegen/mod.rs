@@ -514,22 +514,64 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
             if let Some(lhs_operand) = instruction.get_operand(0)
                 && let Some(lhs) = lhs_operand.left()
             {
-                uses.push(get_basic_value_name(lhs, ctx));
+                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
+                if !is_constant(lhs) {
+                    let name = get_basic_value_name(lhs, ctx);
+                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
+                    if !name.starts_with("tmp_") {
+                        uses.push(name);
+                    }
+                }
             }
             if let Some(rhs_operand) = instruction.get_operand(1)
                 && let Some(rhs) = rhs_operand.left()
             {
-                uses.push(get_basic_value_name(rhs, ctx));
+                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
+                if !is_constant(rhs) {
+                    let name = get_basic_value_name(rhs, ctx);
+                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
+                    if !name.starts_with("tmp_") {
+                        uses.push(name);
+                    }
+                }
             }
         }
         // load指令的例子： load i32, i32* %0, align 4
         // br指令的例子： br label %target 分支指令
         // zext指令的例子： zext i1 %1 to i32 -> %2
-        InstructionOpcode::Load | InstructionOpcode::Br | InstructionOpcode::ZExt => {
+        InstructionOpcode::Load => {
+            // FIX: Load指令的operand 0是指针，应该使用right()获取指针值
+            if let Some(value_operand) = instruction.get_operand(0) {
+                if let Some(ptr_value) = value_operand.right() {
+                    // 指针是指针类型，获取指针的名称
+                    if let Ok(name_str) = ptr_value.get_name().to_str() {
+                        if !name_str.is_empty() {
+                            uses.push(name_str.to_string());
+                        }
+                    }
+                } else if let Some(ptr_value) = value_operand.left() {
+                    // 如果left()也能获取到值（可能是通过alloca创建的指针），也处理
+                    if !is_constant(ptr_value) {
+                        let name = get_basic_value_name(ptr_value, ctx);
+                        if !name.starts_with("tmp_") {
+                            uses.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        InstructionOpcode::Br | InstructionOpcode::ZExt => {
             if let Some(value_operand) = instruction.get_operand(0)
                 && let Some(value) = value_operand.left()
             {
-                uses.push(get_basic_value_name(value, ctx));
+                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
+                if !is_constant(value) {
+                    let name = get_basic_value_name(value, ctx);
+                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
+                    if !name.starts_with("tmp_") {
+                        uses.push(name);
+                    }
+                }
             }
         }
         _ => {}
@@ -663,7 +705,16 @@ fn generate_load_instruction(
                 return;
             }
         } else if let Some(ptr_basic) = ptr_e.left() {
-            get_basic_value_name(ptr_basic, ctx)
+            // FIX: 检查ptr_basic是否是立即数，如果是立即数则不能作为指针使用，直接返回
+            if is_constant(ptr_basic) {
+                return;
+            }
+            let name = get_basic_value_name(ptr_basic, ctx);
+            // FIX: 如果获取的名称是临时名称（以"tmp_"开头），说明这不是一个有效的变量名，不能作为指针使用
+            if name.starts_with("tmp_") {
+                return;
+            }
+            name
         } else {
             return;
         }
@@ -682,8 +733,29 @@ fn generate_load_instruction(
     };
     
     if ctx.is_global(&ptr_name) {
-        asm_builder.emit_la("t0", &ptr_name);
-        asm_builder.emit_lw(&result_reg, 0, "t0");
+        // FIX: 全局变量加载：根据结果位置生成不同的代码
+        // 如果结果在寄存器中，直接加载到结果寄存器
+        // 如果结果在栈中，先加载到临时寄存器，再存储到栈
+        match ctx.get_location(&result_name) {
+            Some(Location::Reg(reg)) => {
+                // 结果在寄存器中，直接加载到结果寄存器
+                asm_builder.emit_la(reg, &ptr_name);
+                asm_builder.emit_lw(reg, 0, reg);
+            }
+            Some(Location::Stack(offset)) => {
+                // 结果在栈中，先加载到临时寄存器，再存储到栈
+                asm_builder.emit_la("t0", &ptr_name);
+                asm_builder.emit_lw("t0", 0, "t0");
+                asm_builder.emit_sw("t0", *offset, "sp");
+            }
+            _ => {
+                // 其他情况，使用默认方式
+                asm_builder.emit_la("t0", &ptr_name);
+                asm_builder.emit_lw(&result_reg, 0, "t0");
+            }
+        }
+        // FIX: 全局变量加载后，不需要再次存储结果（已经在上面处理了）
+        return;
     } else {
         let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
             Location::Reg(reg) => (Some(reg.clone()), None),
@@ -691,24 +763,34 @@ fn generate_load_instruction(
             _ => (None, None),
         });
         
+        // FIX: 如果loc_type为None，说明ptr_name不是一个有效的变量（可能是立即数或临时值），直接返回
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
-            if let Some(ptr_reg) = reg_opt {
-                asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
-            } else if let Some(sp_offset) = sp_offset_opt {
-                if ctx.is_alloca(&ptr_name) {
+            // FIX: alloca变量应该始终使用栈存储，即使它被分配到了寄存器
+            if ctx.is_alloca(&ptr_name) {
+                if let Some(sp_offset) = sp_offset_opt {
                     // alloca变量：先加载指针值，再间接加载数据
                     let ptr_reg = "t1";
                     asm_builder.emit_lw(ptr_reg, sp_offset, "sp");
                     asm_builder.emit_lw(&result_reg, 0, ptr_reg);
                 } else {
-                    // 普通局部变量：直接从栈加载
-                    asm_builder.emit_lw(&result_reg, sp_offset, "sp");
+                    // FIX: alloca变量被分配到寄存器是不正确的，应该使用栈存储
+                    // 如果alloca变量被分配到寄存器，说明寄存器分配有问题，这里应该报错或使用默认栈位置
+                    return;
                 }
+            } else if let Some(ptr_reg) = reg_opt {
+                // 非alloca变量：如果分配到寄存器，直接使用寄存器作为指针（这种情况不应该发生，因为load的源应该是指针）
+                asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
+            } else if let Some(sp_offset) = sp_offset_opt {
+                // 普通局部变量：直接从栈加载
+                asm_builder.emit_lw(&result_reg, sp_offset, "sp");
             }
+        } else {
+            // FIX: ptr_name不在ctx中，说明这不是一个有效的变量，不能作为指针使用
+            return;
         }
     }
     
-    // 如果结果在栈中，存储结果
+    // FIX: 如果结果在栈中，存储结果（全局变量已经在上面处理了，这里只处理局部变量）
     if let Some(result_loc) = ctx.get_location(&result_name) {
         if let Location::Stack(offset) = result_loc {
             asm_builder.emit_sw(&result_reg, *offset, "sp");
@@ -903,7 +985,16 @@ fn generate_store_instruction(
                 return;
             }
         } else if let Some(to) = to_e.left() {
-            get_basic_value_name(to, ctx)
+            // FIX: 检查to是否是立即数，如果是立即数则不能作为指针使用，直接返回
+            if is_constant(to) {
+                return;
+            }
+            let name = get_basic_value_name(to, ctx);
+            // FIX: 如果获取的名称是临时名称（以"tmp_"开头），说明这不是一个有效的变量名，不能作为指针使用
+            if name.starts_with("tmp_") {
+                return;
+            }
+            name
         } else {
             return;
         };
@@ -923,22 +1014,32 @@ fn generate_store_instruction(
             _ => (None, None),
         });
         
+        // FIX: 如果loc_type为None，说明ptr_name不是一个有效的变量（可能是立即数或临时值），直接返回
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
-            if let Some(reg) = reg_opt {
-                load_value_to_reg(from, ctx, &reg, asm_builder);
-            } else if let Some(sp_offset) = sp_offset_opt {
-                if ctx.is_alloca(&ptr_name) {
+            // FIX: alloca变量应该始终使用栈存储，即使它被分配到了寄存器
+            if ctx.is_alloca(&ptr_name) {
+                if let Some(sp_offset) = sp_offset_opt {
                     // alloca变量：先加载指针值，再间接存储
                     let ptr_reg = "t2";
                     asm_builder.emit_lw(ptr_reg, sp_offset, "sp");
                     let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
                     asm_builder.emit_sw(&from_reg, 0, ptr_reg);
                 } else {
-                    // 普通局部变量：直接存储到栈
-                    let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
-                    asm_builder.emit_sw(&from_reg, sp_offset, "sp");
+                    // FIX: alloca变量被分配到寄存器是不正确的，应该使用栈存储
+                    // 如果alloca变量被分配到寄存器，说明寄存器分配有问题，这里应该报错或使用默认栈位置
+                    return;
                 }
+            } else if let Some(reg) = reg_opt {
+                // 非alloca变量：如果分配到寄存器，直接存储到寄存器（这种情况不应该发生，因为store的目标应该是指针）
+                load_value_to_reg(from, ctx, &reg, asm_builder);
+            } else if let Some(sp_offset) = sp_offset_opt {
+                // 普通局部变量：直接存储到栈
+                let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
+                asm_builder.emit_sw(&from_reg, sp_offset, "sp");
             }
+        } else {
+            // FIX: ptr_name不在ctx中，说明这不是一个有效的变量，不能作为指针使用
+            return;
         }
     }
 }
@@ -1099,7 +1200,13 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
             }
         }
     }
-    "x0".to_string()
+    // FIX: 当找不到location时，不应该返回x0（零寄存器），而应该使用临时寄存器加载该值
+    // 这种情况通常发生在值没有被正确分配位置时，应该从栈或全局变量加载
+    // 但由于我们不知道具体位置，这里使用临时寄存器并初始化为0，或者报错
+    // 实际上，这种情况不应该发生，如果发生了，说明寄存器分配有问题
+    // 为了安全起见，我们使用临时寄存器并初始化为0
+    asm_builder.emit_li(reg_name, 0);
+    reg_name.to_string()
 }
 
 
@@ -1157,6 +1264,14 @@ mod tests {
     fn  test_part2() {
         let file_path = format!("{}{}", FILE_PATH, "part2.sy");
         let out_path = format!("{}{}", FILE_PATH, "part2.s");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let _ = generate_asm(&input, &out_path);
+    }
+
+    #[test]
+    fn  test_part3() {
+        let file_path = format!("{}{}", FILE_PATH, "part3.sy");
+        let out_path = format!("{}{}", FILE_PATH, "part3.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }

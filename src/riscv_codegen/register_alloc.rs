@@ -37,6 +37,42 @@ impl InnerVar {
     }
 }
 
+// FIX: ActiveVar用于active集合，按end_offset排序以便快速找到结束时间最晚的变量
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveVar {
+    inner: InnerVar,
+}
+
+impl ActiveVar {
+    fn new(inner: InnerVar) -> Self {
+        Self { inner }
+    }
+    
+    fn as_inner(&self) -> &InnerVar {
+        &self.inner
+    }
+    
+    fn into_inner(self) -> InnerVar {
+        self.inner
+    }
+}
+
+impl PartialOrd for ActiveVar {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ActiveVar {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // FIX: 按end_offset排序，如果相同则按变量名排序（保证唯一性）
+        match self.inner.end_offset.cmp(&other.inner.end_offset) {
+            Ordering::Equal => self.inner.name.cmp(&other.inner.name),
+            other => other,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Location { Reg(String), Stack(i32), Global(String) }
 
@@ -76,12 +112,12 @@ impl RegisterAllocator for NoAlloc {
 pub struct LinearScan {
     // 空闲的寄存器池
     regs: Vec<String>,
-    // 被占用的寄存器集合 HashSet 没有循序 改成BTreeSet     
-    active_vars: BTreeSet<InnerVar>,
+    // FIX: active_vars改为使用ActiveVar，按end_offset排序以便快速找到结束时间最晚的变量
+    active_vars: BTreeSet<ActiveVar>,
     // 寄存器和变量映射表
     reg_to_var: HashMap<String, String>,
-    // 栈空间
-    stack_offset: usize,
+    // FIX: 栈偏移改为i32类型，使用负数偏移（从0开始递减：0, -4, -8...），符合RISC-V栈向下增长的习惯
+    stack_offset: i32,
 }
 
 impl LinearScan {
@@ -131,16 +167,20 @@ impl LinearScan {
     }
 
     fn clear_inactive_vars(&mut self,var: &InnerVar) {
+        // FIX: 修复判断条件和变量名使用错误
         // 收集所有结束时间小于当前变量的开始时间的活跃区间
-        let mut inactive_vars = Vec::<InnerVar>::new();
+        let mut inactive_vars = Vec::<ActiveVar>::new();
         for active in self.active_vars.iter() {
-            if var.get_end_offset() < active.get_start_offset() {
+            // FIX: 应该判断活跃区间的结束时间是否小于当前变量的开始时间
+            if active.as_inner().get_end_offset() < var.get_start_offset() {
                 inactive_vars.push(active.clone());
             }
         }
         for inactive in inactive_vars.iter() {
+            let inner = inactive.as_inner();
             self.active_vars.remove(inactive);
-            if let Some(reg) = self.reg_to_var.get(var.get_name()) {
+            // FIX: 应该使用inactive变量的名称来获取寄存器，而不是当前变量var的名称
+            if let Some(reg) = self.reg_to_var.get(inner.get_name()) {
                 self.regs.push(reg.clone());
             }
         }
@@ -148,30 +188,37 @@ impl LinearScan {
 
     /// 没有寄存器可分配的溢出处理
     fn overflow_to_stack(&mut self,var: &InnerVar) {
-        // 对比当前变量和活跃列表中结束时间最晚的变量，如果当前变量的结束时间大于最晚的变量，则溢出到栈上
-        if let Some(max_var) = self.active_vars.last().cloned(){
-            if max_var.get_end_offset() >= var.get_start_offset() {
-                // max_var 溢出到栈
-                self.put_in_stack(&max_var);
-                self.active_vars.remove(&max_var);
+        // FIX: 使用ActiveVar后，last()现在能正确返回结束时间最晚的变量
+        // FIX: 修正注释和添加else分支处理active_vars为空的情况
+        if let Some(max_active_var) = self.active_vars.last().cloned(){
+            let max_var = max_active_var.as_inner();
+            // FIX: 如果最晚变量的结束时间大于当前变量的结束时间，则spill最晚变量，否则spill当前变量
+            if max_var.get_end_offset() > var.get_end_offset() {
+                // max_var 溢出到栈，将其寄存器分配给当前变量
+                self.put_in_stack(max_var);
+                self.active_vars.remove(&max_active_var);
                 let reg = self.reg_to_var.get(max_var.get_name()).unwrap();
-                // var 加入栈帧
-                self.active_vars.insert(var.clone());
+                // var 加入active集合
+                self.active_vars.insert(ActiveVar::new(var.clone()));
                 self.reg_to_var.insert(var.get_name().clone(),reg.clone());
             }else {
-                // var 溢出到栈
+                // var 溢出到栈（因为var的结束时间更晚或相等）
                 self.put_in_stack(var);
             }
+        } else {
+            // FIX: 如果没有active变量，直接spill当前变量到栈
+            self.put_in_stack(var);
         }
     }
 
     /// 栈分配
     fn put_in_stack(&mut self,var: &InnerVar) {
+        // FIX: 使用负数偏移，符合RISC-V栈向下增长的习惯
+        self.stack_offset -= 4;
         self.reg_to_var.insert(
             var.get_name().clone(),
             format!("{}(sp)", self.stack_offset),
         );
-        self.stack_offset += 4;
     }
 }
 
@@ -192,12 +239,48 @@ impl RegisterAllocator for LinearScan {
             }else {
                 // 分配寄存器（按优先级：t > s > a）
                 let reg = self.pop_reg().unwrap();
-                self.active_vars.insert(var.clone());
+                // FIX: 插入ActiveVar而不是InnerVar
+                self.active_vars.insert(ActiveVar::new(var.clone()));
                 self.reg_to_var.insert(var.get_name().clone(),reg);
             }
         }
-        // 计算栈的总量
-        (self.reg_to_var.clone(),self.stack_offset)
+        
+        // FIX: 计算栈大小并转换负数偏移为正偏移
+        // 栈大小 = -stack_offset（如果stack_offset是负数）
+        // 使用i32进行计算，确保类型一致性
+        let stack_size_i32 = if self.stack_offset < 0 {
+            -self.stack_offset
+        } else {
+            0
+        };
+        
+        // FIX: 将负数偏移转换为正偏移（从栈帧底部开始的偏移）
+        let mut fixed_allocation = HashMap::new();
+        for (var, loc) in &self.reg_to_var {
+            if loc.ends_with("(sp)") {
+                let offset_str = loc.trim_end_matches("(sp)");
+                if let Ok(offset) = offset_str.parse::<i32>() {
+                    if offset < 0 {
+                        // FIX: 转换负数偏移为正偏移：positive_offset = stack_size_i32 + offset
+                        // 例如：stack_size_i32=12, offset=-4 -> positive_offset=12+(-4)=8
+                        // 注意：stack_size_i32 + offset 的结果可能为0或正数
+                        let positive_offset = stack_size_i32 + offset;
+                        fixed_allocation.insert(var.clone(), format!("{}(sp)", positive_offset));
+                    } else {
+                        // FIX: 如果已经是正偏移，直接使用（这种情况不应该发生，但为了安全保留）
+                        fixed_allocation.insert(var.clone(), loc.clone());
+                    }
+                } else {
+                    fixed_allocation.insert(var.clone(), loc.clone());
+                }
+            } else {
+                fixed_allocation.insert(var.clone(), loc.clone());
+            }
+        }
+        
+        // FIX: 将i32类型的stack_size转换为usize返回
+        let stack_size = stack_size_i32 as usize;
+        (fixed_allocation, stack_size)
     }
 }
 
