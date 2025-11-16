@@ -61,22 +61,21 @@ pub fn parse_llvm_ir<'ctx>(ir_session: &IrSession<'ctx>, output: &str) {
     std::fs::write(output, result).unwrap();
 }
 
-/// 代码生成上下文（两次遍历架构的核心）
-/// 保存变量位置映射和总栈大小，在第一遍和第二遍之间传递
+/// 代码生成上下文：保存变量位置映射和栈大小
 pub struct GenContext {
     var_locations: HashMap<String, Location>, // 变量名 -> 存储位置
-    stack_size: usize,                        // 总栈大小（从寄存器分配器获得）
-    global_names: Vec<String>,                // 全局变量名列表（用于区分全局和局部）
+    stack_size: usize,                        // 总栈大小
+    global_names: Vec<String>,                // 全局变量名列表
     temp_val_num: usize,
-    alloca_names: HashSet<String>,           // alloca变量名集合（用于区分alloca变量和普通局部变量）
+    alloca_names: HashSet<String>,           // alloca变量名集合
     pure_stack_mode: bool,                   // 是否为纯栈分配模式
 }
 
 impl GenContext {
-    // 为了调试，添加访问alloca_names的方法
     pub fn get_alloca_names(&self) -> &HashSet<String> {
         &self.alloca_names
     }
+    
     pub fn new() -> Self {
         Self {
             var_locations: HashMap::new(),
@@ -88,86 +87,71 @@ impl GenContext {
         }
     }
     
-    /// 设置纯栈分配模式
     pub fn set_pure_stack_mode(&mut self, enabled: bool) {
         self.pure_stack_mode = enabled;
     }
     
-    /// 设置alloca变量集合
     pub fn set_alloca_names(&mut self, alloca_names: HashSet<String>) {
         self.alloca_names = alloca_names;
     }
     
-    /// 检查是否为alloca变量
-    /// 在纯栈分配模式下，alloca变量应该直接存储值，而不是存储指针
+    /// 检查是否为alloca变量（纯栈模式下返回false）
     pub fn is_alloca(&self, name: &str) -> bool {
-        // 在纯栈分配模式下，所有变量都直接存储在栈上，不需要通过指针访问
         if self.pure_stack_mode {
             return false;
         }
         self.alloca_names.contains(name)
     }
 
-    /// 注册全局变量到上下文
     pub fn add_global(&mut self, name: String) {
         self.var_locations
             .insert(name.clone(), Location::Global(name.clone()));
         self.global_names.push(name);
     }
 
-    /// 查询变量的存储位置
     pub fn get_location(&self, name: &str) -> Option<&Location> {
         self.var_locations.get(name)
     }
 
-    /// 设置寄存器分配结果（从分配器）
-    /// 将分配器返回的字符串结果转换为VarLocation
+    /// 记录寄存器分配结果：将分配器返回的字符串转换为Location
     pub fn record_alloca_vars(&mut self, allocation: HashMap<String, String>, stack_size: usize) {
-        self.stack_size = stack_size; // 保存总栈大小
+        self.stack_size = stack_size;
 
         for (var, loc_str) in allocation {
-            // 保护全局变量，不被SSA值覆盖
             if let Some(Location::Global(_)) = self.var_locations.get(&var) {
-                continue;
+                continue; // 保护全局变量
             }
 
-            // 解析位置字符串
             let location = if loc_str.ends_with("(sp)") {
-                // 栈位置：如 "16(sp)" -> Mem(16)
                 let offset_str = loc_str.trim_end_matches("(sp)");
                 let offset: i32 = offset_str.parse().unwrap();
                 Location::Stack(offset)
             } else {
-                // 寄存器位置：如 "t0" -> Reg("t0")
                 Location::Reg(loc_str)
             };
             self.var_locations.insert(var, location);
         }
     }
 
-    /// 获取总栈大小
     pub fn get_stack_size(&self) -> usize {
         self.stack_size
     }
 
-    /// 检查是否为全局变量
     pub fn is_global(&self, name: &str) -> bool {
         self.global_names.contains(&name.to_string())
     }
 }
 
-/// 第一次遍历的状态
-/// 用于收集指令的def/use信息
+/// 第一次遍历状态：收集指令的def/use信息
 struct FunctionState {
-    instructions: Vec<(usize, String, Vec<String>)>, // (指令索引,操作数名称，被当作操作数使用的集合)
-    allocation_names: HashSet<String>,               // 函数作用域下本地变量集合
-    block_start_idxes: HashMap<String, usize>,       // 基本块起始命令的位置
-    loop_branch: bool,                               // 循环标志
-    idx: usize,                                      // 当前指令索引（指令编号）
+    instructions: Vec<(usize, String, Vec<String>)>, // (指令索引, 变量名, 使用的变量集合)
+    allocation_names: HashSet<String>,               // alloca变量集合
+    block_start_idxes: HashMap<String, usize>,       // 基本块起始位置
+    loop_branch: bool,                               // 是否存在循环
+    idx: usize,                                      // 当前指令索引
 }
 
 impl FunctionState {
-    /// 创建新的函数状态
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
@@ -359,7 +343,7 @@ fn build_function<'ctx>(
     let inner_vars = state.compute_liveness();
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
-    let pure_stack_mode = true;  // Part2使用纯栈分配模式
+    let pure_stack_mode = false; //Part2使用纯栈分配模式
     let alloctor = AllocatedInnerVar::default();
     let (allocations, stack_size) = alloctor.allocate(inner_vars, pure_stack_mode);
     // 记录变量分配好的存储位置和预计使用的栈空间
@@ -520,7 +504,6 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
         // store指令的例子： store i32 %1, i32* %0, align 4
         // 收集value和ptr操作数
         // icmp指令的例子： icmp eq i32 %1, i32 %2 -> %3
-        // icmp指令的例子： icmp eq i32 %1, i32 %2 -> %3
         InstructionOpcode::ICmp
         | InstructionOpcode::Store
         | InstructionOpcode::Add
@@ -636,112 +619,18 @@ fn generate_instruction(
     }
 }
 
-/// 生成 RISC-V return 指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// ret i32 %value
-/// ret void
-/// ```
-/// - 操作数0 (可选): 返回值（对于有返回值的函数）
-/// - 无操作数: 对于 void 函数
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 返回立即数
-/// ```llvm
-/// ; LLVM IR
-/// ret i32 42
-/// ```
-/// 生成汇编：
-/// ```asm
-/// li   a0, 42          ; 加载返回值到 a0 寄存器
-/// addi sp, sp, 16       ; 恢复栈指针（假设栈大小为 16）
-/// li   a7, 93          ; 设置系统调用号为 exit
-/// ecall                ; 执行系统调用
-/// ```
-///
-/// ### 示例2: 返回寄存器变量
-/// ```llvm
-/// ; LLVM IR
-/// ret i32 %1
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中：
-/// ```asm
-/// mv   a0, t3          ; 将返回值移动到 a0 寄存器
-/// addi sp, sp, 16      ; 恢复栈指针
-/// li   a7, 93          ; 设置系统调用号
-/// ecall                ; 执行系统调用
-/// ```
-///
-/// ### 示例3: 返回栈变量
-/// ```llvm
-/// ; LLVM IR
-/// ret i32 %1
-/// ```
-/// 假设 `%1` 在栈偏移 `16` 处：
-/// ```asm
-/// lw   a0, 16(sp)      ; 从栈加载返回值到 a0
-/// addi sp, sp, 32       ; 恢复栈指针（假设总栈大小为 32）
-/// li   a7, 93          ; 设置系统调用号
-/// ecall                ; 执行系统调用
-/// ```
-///
-/// ### 示例4: void 返回
-/// ```llvm
-/// ; LLVM IR
-/// ret void
-/// ```
-/// 生成汇编：
-/// ```asm
-/// addi sp, sp, 16      ; 恢复栈指针
-/// li   a7, 93          ; 设置系统调用号
-/// ecall                ; 执行系统调用
-/// ```
-///
-/// ## 实现思路
-///
-/// ### 1. 提取返回值（如果有）
-/// - 检查指令是否有操作数
-/// - 如果有操作数，提取返回值（可能是立即数、寄存器变量或栈变量）
-///
-/// ### 2. 加载返回值到 a0 寄存器
-/// - 使用 `get_value_from_reg()` 将返回值加载到 `a0` 寄存器
-/// - 返回值通过 `a0` 寄存器传递给系统调用
-///
-/// ### 3. 恢复栈指针（函数 epilogue）
-/// - 从 `ctx.get_stack_size()` 获取总栈大小
-/// - 对齐栈大小到 16 字节
-/// - 使用 `emit_function_epilogue()` 恢复栈指针
-///
-/// ### 4. 执行退出系统调用
-/// - 使用 `emit_exit_syscall()` 生成 `li a7, 93; ecall`
-/// - 系统调用号 93 对应 exit 系统调用
-///
-/// ## 寄存器使用
-/// - `a0`: 返回值寄存器，传递给系统调用
-/// - `a7`: 系统调用号寄存器，设置为 93（exit）
-/// - `sp`: 栈指针，需要恢复到函数调用前的状态
-///
-/// ## 注意事项
-/// - RISC-V 中，main 函数不能使用普通的 `ret` 指令
-/// - 必须显式调用 exit 系统调用来结束程序
-/// - 返回值必须通过 `a0` 寄存器传递
-/// - 栈大小必须对齐到 16 字节边界
+/// 生成return指令：加载返回值到a0，恢复栈指针，执行exit系统调用
 fn generate_return_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
     ctx: &mut GenContext,
 ) {
-    // ret i32 %a1 或 ret void
     let num_operands = instruction.get_num_operands();
     
-    // 处理返回值（如果有）
     if num_operands > 0 {
         if let Some(return_operand) = instruction.get_operand(0)
             && let Some(return_value) = return_operand.left()
         {
-            // 将返回值加载到 a0 寄存器
             let return_reg = get_value_from_reg(return_value, ctx, "a0", asm_builder);
             if return_reg != "a0" {
                 asm_builder.emit_mv("a0", &return_reg);
@@ -749,138 +638,40 @@ fn generate_return_instruction(
         }
     }
     
-    // 恢复栈指针（函数 epilogue）
     let stack_size = ctx.get_stack_size();
     let aligned_stack_size = if stack_size > 0 {
         ((stack_size + 15) / 16) * 16
     } else {
         0
     };
-    // if aligned_stack_size > 0 {
-    //     asm_builder.emit_function_epilogue(aligned_stack_size);
-    // }
     asm_builder.emit_function_epilogue(aligned_stack_size);
-    // 执行退出系统调用
     asm_builder.emit_exit_syscall();
 }
 
-/// 生成 RISC-V load 指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// %result = load i32, i32* %ptr, align 4
-/// ```
-/// - 操作数0 (`ptr`): 源指针变量名（来自 alloca 或全局变量）
-/// - 结果: 存储加载值的变量名（通过 `get_value_name()` 获取）
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 从栈变量加载
-/// ```llvm
-/// ; LLVM IR
-/// %result = load i32, i32* %local_var, align 4
-/// ```
-/// 假设 `%local_var` 在栈偏移 `16` 处，结果 `%result` 在寄存器 `t5` 中：
-/// ```asm
-/// lw   t5, 16(sp)       ; 从栈偏移 16 处加载值到 t5
-/// ```
-///
-/// ### 示例2: 从全局变量加载
-/// ```llvm
-/// ; LLVM IR
-/// %result = load i32, i32* @global_var, align 4
-/// ```
-/// 假设结果 `%result` 在寄存器 `t5` 中：
-/// ```asm
-/// la   t0, global_var   ; 加载全局变量地址到 t0
-/// lw   t5, 0(t0)        ; 从全局变量地址加载值到 t5
-/// ```
-///
-/// ### 示例3: 从寄存器中的指针加载
-/// ```llvm
-/// ; LLVM IR
-/// %result = load i32, i32* %ptr_reg, align 4
-/// ```
-/// 假设 `%ptr_reg` 在寄存器 `t4` 中（存放内存地址），结果 `%result` 在寄存器 `t5` 中：
-/// ```asm
-/// lw   t5, 0(t4)        ; 从 t4 指向的地址加载值到 t5
-/// ```
-///
-/// ## 实现思路
-///
-/// ### 1. 提取操作数
-/// - 从指令中提取源指针 (`ptr`)
-/// - 获取结果变量名 `result_name`（通过 `get_value_name()`）
-///
-/// ### 2. 处理源指针
-/// 源指针可能有以下几种情况：
-/// - **全局变量**: `ctx.is_global(&ptr)` → 使用 `la` + `lw` 加载
-/// - **栈变量**: `Location::Stack(offset)` → 直接使用 `lw reg, offset(sp)`
-/// - **寄存器中的指针**: `Location::Reg(reg)` → 使用 `lw reg, 0(ptr_reg)`
-///
-/// ### 3. 获取结果寄存器
-/// - 查询 `ctx.get_location(&result_name)` 获取结果的存储位置
-/// - 如果结果在寄存器中：`Location::Reg(reg)` → 直接加载到该寄存器
-/// - 如果结果在栈中：`Location::Stack(offset)` → 先加载到临时寄存器，再存储到栈
-/// - 如果没有分配位置：使用临时寄存器 `t0`
-///
-/// ### 4. 根据指针类型生成汇编
-///
-/// #### 情况A: 全局变量
-/// 当 `ctx.is_global(&ptr)` 为 `true` 时：
-/// 1. 使用 `la t0, ptr` 将全局变量地址加载到临时寄存器 `t0`
-/// 2. 使用 `lw result_reg, 0(t0)` 从全局变量地址加载值
-///
-/// #### 情况B: 栈变量 (`Location::Stack(offset)`)
-/// 当源指针是局部变量（alloca）时：
-/// - `ptr` 在 `ctx.var_locations` 中的 `Location::Stack(offset)` 表示源在栈上的偏移
-/// - 直接使用 `lw result_reg, offset(sp)` 从栈加载值
-///
-/// #### 情况C: 寄存器中的指针 (`Location::Reg(reg)`)
-/// 当指针本身存储在寄存器中时：
-/// - 寄存器中存放的是内存地址
-/// - 使用 `lw result_reg, 0(ptr_reg)` 从该寄存器指向的地址加载值
-///
-/// ## 寄存器使用
-/// - `t0`: 临时寄存器，用于存放全局变量地址或加载的值
-/// - `result_reg`: 结果寄存器，可能是分配的寄存器或临时寄存器
-///
-/// ## 与 store 指令的对应关系
-/// - `load`: 从内存读取 → 寄存器
-/// - `store`: 从寄存器写入 → 内存
-/// 两者在源/目标位置查询和处理逻辑上是对称的
+/// 生成load指令：从指针指向的位置加载值到寄存器
 fn generate_load_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
     ctx: &mut GenContext,
 ) {
-    // %a1 = load i32, i32* %a0, align 4
     let ptr_operand = instruction.get_operand(0);
     let ptr_name = if let Some(ptr_e) = ptr_operand {
-        // 尝试用right()获取PointerValue（load指令的指针操作数应该是指针类型）
         if let Some(ptr_value) = ptr_e.right() {
-            // 指针类型，直接获取名称
             if let Ok(name_str) = ptr_value.get_name().to_str() {
                 name_str.to_string()
             } else {
-                return; // 无法获取指针名称，跳过
+                return;
             }
+        } else if let Some(ptr_basic) = ptr_e.left() {
+            get_basic_value_name(ptr_basic, ctx)
         } else {
-            // 如果不是指针类型，尝试用left()获取BasicValueEnum
-            // 这在某些情况下可能是必要的，比如指针值被传递为BasicValueEnum
-            if let Some(ptr_basic) = ptr_e.left() {
-                get_basic_value_name(ptr_basic, ctx)
-            } else {
-                return; // load指令的指针操作数必须是指针类型，无法获取则跳过
-            }
+            return;
         }
     } else {
-        return; // 没有操作数，跳过
+        return;
     };
     
     let result_name = get_value_name(instruction);
-        
-    // 获取结果寄存器
     let result_reg = if let Some(result_loc) = ctx.get_location(&result_name) {
         match result_loc {
             Location::Reg(reg) => reg.to_string(),
@@ -890,13 +681,10 @@ fn generate_load_instruction(
         "t0".to_string()
     };
     
-    // 根据指针类型处理
     if ctx.is_global(&ptr_name) {
-        // 全局变量：la + lw
         asm_builder.emit_la("t0", &ptr_name);
         asm_builder.emit_lw(&result_reg, 0, "t0");
     } else {
-        // 栈变量或寄存器中的指针
         let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
             Location::Reg(reg) => (Some(reg.clone()), None),
             Location::Stack(sp_offset) => (None, Some(*sp_offset)),
@@ -905,32 +693,22 @@ fn generate_load_instruction(
         
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
             if let Some(ptr_reg) = reg_opt {
-                // 从寄存器中的指针加载
                 asm_builder.emit_lw(&result_reg, 0, &ptr_reg);
             } else if let Some(sp_offset) = sp_offset_opt {
-                // 需要区分alloca变量和普通局部变量
                 if ctx.is_alloca(&ptr_name) {
-                    // alloca变量（指针）存储在栈偏移sp_offset处
-                    // 我们需要：
-                    // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
-                    // 2. 然后使用指针值加载数据：lw result_reg, 0(ptr_reg)
-                    let ptr_reg = "t1";  // 临时寄存器，用于存放指针值
-                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
-                    asm_builder.emit_lw(&result_reg, 0, ptr_reg);   // 使用指针值加载数据
+                    // alloca变量：先加载指针值，再间接加载数据
+                    let ptr_reg = "t1";
+                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");
+                    asm_builder.emit_lw(&result_reg, 0, ptr_reg);
                 } else {
-                    // 普通局部变量：直接从栈偏移位置加载
+                    // 普通局部变量：直接从栈加载
                     asm_builder.emit_lw(&result_reg, sp_offset, "sp");
                 }
             }
-        } else {
-            // 如果找不到location，说明该指针变量未被分配
-            // 在纯栈分配模式下，alloca变量应该已经在步骤5中分配了栈位置
-            // 但如果仍然找不到，可能是变量名映射问题
-            // 这种情况不应该发生在正确的LLVM IR中
         }
     }
     
-    // 如果结果在栈中，需要存储
+    // 如果结果在栈中，存储结果
     if let Some(result_loc) = ctx.get_location(&result_name) {
         if let Location::Stack(offset) = result_loc {
             asm_builder.emit_sw(&result_reg, *offset, "sp");
@@ -938,94 +716,16 @@ fn generate_load_instruction(
     }
 }
 
-/// 生成 RISC-V 分支跳转指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// br label %target                    ; 无条件跳转
-/// br i1 %cond, label %true, label %false  ; 条件跳转
-/// ```
-/// - 操作数（无条件）: 跳转目标标签
-/// - 操作数（条件）: 条件值、true 分支标签、false 分支标签
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 无条件跳转
-/// ```llvm
-/// ; LLVM IR
-/// br label %label1
-/// ```
-/// 生成汇编：
-/// ```asm
-/// j    label1          ; 无条件跳转到 label1
-/// ```
-///
-/// ### 示例2: 条件跳转（相等）
-/// ```llvm
-/// ; LLVM IR
-/// br i1 %cmp, label %true_block, label %false_block
-/// ```
-/// 假设 `%cmp` 在寄存器 `t3` 中：
-/// ```asm
-/// beq  t3, zero, false_block  ; 如果 t3 == 0，跳转到 false_block
-/// j    true_block               ; 否则跳转到 true_block
-/// ```
-/// 或者使用 `bne`：
-/// ```asm
-/// bne  t3, zero, true_block     ; 如果 t3 != 0，跳转到 true_block
-/// j    false_block              ; 否则跳转到 false_block
-/// ```
-///
-/// ### 示例3: 条件跳转（寄存器值）
-/// ```llvm
-/// ; LLVM IR
-/// br i1 %cond, label %if_true, label %if_false
-/// ```
-/// 假设 `%cond` 在寄存器 `t3` 中：
-/// ```asm
-/// bne  t3, zero, if_true        ; 如果 t3 != 0（非零即真），跳转到 if_true
-/// j    if_false                  ; 否则跳转到 if_false
-/// ```
-///
-/// ## 实现思路
-///
-/// ### 1. 判断跳转类型
-/// - 检查指令操作数数量
-/// - 1个操作数：无条件跳转
-/// - 3个操作数：条件跳转
-///
-/// ### 2. 无条件跳转处理
-/// - 提取跳转目标标签（基本块名称）
-/// - 使用 `emit_j(label)` 生成无条件跳转指令
-///
-/// ### 3. 条件跳转处理
-/// - 提取条件值（第0个操作数）
-/// - 提取 true 分支标签（第1个操作数）
-/// - 提取 false 分支标签（第2个操作数）
-/// - 将条件值加载到寄存器（通过 `get_value_from_reg()`）
-/// - 使用条件分支指令：
-///   - 如果条件值在寄存器中，使用 `bne cond_reg, zero, true_label` 跳转到 true 分支
-///   - 然后使用 `j false_label` 跳转到 false 分支
-///   - 或者反过来：先跳转 false，再跳转 true
-///
-/// ## 寄存器使用
-/// - `t0`: 临时寄存器，用于存放条件值（如果需要加载）
-///
-/// ## 注意事项
-/// - 条件值：在 RISC-V 中，非零值表示 true，零值表示 false
-/// - 条件分支通常使用 `bne` 或 `beq` 与 `zero` 寄存器比较
-/// - 基本块标签已经在第一遍遍历中生成，直接使用即可
+/// 生成br指令：无条件跳转或条件跳转
 fn generate_br_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
     ctx: &mut GenContext,
 ) {
-    // br label %label 或 br i1 %cond, label %true, label %false
     let num_operands = instruction.get_num_operands();
     
     match num_operands {
         1 => {
-            // 无条件跳转：br label %target
             if let Some(target_operand) = instruction.get_operand(0)
                 && let Some(target) = target_operand.right()
                 && let Ok(target_name) = target.get_name().to_str()
@@ -1034,7 +734,6 @@ fn generate_br_instruction(
             }
         }
         3 => {
-            // 条件跳转：br i1 %cond, label %true, label %false
             if let Some(cond_operand) = instruction.get_operand(0)
                 && let Some(true_operand) = instruction.get_operand(1)
                 && let Some(false_operand) = instruction.get_operand(2)
@@ -1044,13 +743,8 @@ fn generate_br_instruction(
                 && let Ok(true_label) = true_target.get_name().to_str()
                 && let Ok(false_label) = false_target.get_name().to_str()
             {
-                // 加载条件值到寄存器
                 let cond_reg = get_value_from_reg(cond, ctx, "t0", asm_builder);
-                
-                // 在 RISC-V 中，非零值表示 true，零值表示 false
-                // 使用 bne 检查条件是否为非零（true）
                 asm_builder.emit_bne(&cond_reg, "x0", true_label);
-                // 如果条件为 false（零），跳转到 false 分支
                 asm_builder.emit_j(false_label);
             }
         }
@@ -1058,106 +752,24 @@ fn generate_br_instruction(
     }
 }
 
-/// 生成 RISC-V 零扩展指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// %result = zext i1 %value to i32
-/// ```
-/// - 操作数0 (`value`): 源值（i1 类型，0 或 1）
-/// - 结果: 扩展后的值（i32 类型）
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 寄存器变量零扩展
-/// ```llvm
-/// ; LLVM IR
-/// %result = zext i1 %1 to i32
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，结果 `%result` 在寄存器 `t5` 中：
-/// ```asm
-/// mv   t5, t3          ; 直接移动，因为 i1 已经是 i32 的低位
-/// ```
-/// 或者如果需要清除高位：
-/// ```asm
-/// andi t5, t3, 1        ; t5 = t3 & 1（只保留最低位）
-/// ```
-///
-/// ### 示例2: 立即数零扩展
-/// ```llvm
-/// ; LLVM IR
-/// %result = zext i1 1 to i32
-/// ```
-/// 生成汇编：
-/// ```asm
-/// li   t5, 1            ; 直接加载立即数 1
-/// ```
-///
-/// ### 示例3: 栈变量零扩展
-/// ```llvm
-/// ; LLVM IR
-/// %result = zext i1 %1 to i32
-/// ```
-/// 假设 `%1` 在栈偏移 `16` 处，结果 `%result` 在寄存器 `t5` 中：
-/// ```asm
-/// lw   t0, 16(sp)       ; 从栈加载值到 t0
-/// andi t5, t0, 1        ; 零扩展（保留最低位）
-/// ```
-///
-/// ## 实现思路
-///
-/// ### 1. 提取操作数
-/// - 从指令中提取源值 (`value`)
-/// - 获取结果变量名 `result_name`（通过 `get_value_name()`）
-///
-/// ### 2. 获取结果寄存器
-/// - 查询 `ctx.get_location(&result_name)` 获取结果的存储位置
-/// - 如果结果在寄存器中：`Location::Reg(reg)` → 使用该寄存器
-/// - 如果结果在栈中：`Location::Stack(offset)` → 使用临时寄存器 `t0`，然后存储到栈
-/// - 如果没有分配位置：使用临时寄存器 `t0`
-///
-/// ### 3. 处理源值
-/// 源值可能有以下几种情况：
-/// - **立即数常量**: 直接加载到结果寄存器
-/// - **寄存器变量**: `Location::Reg(reg)` → 使用 `mv` 或 `andi` 扩展
-/// - **栈变量**: `Location::Stack(offset)` → 先加载到临时寄存器，再扩展
-/// - **全局变量**: `Location::Global(name)` → 先加载到临时寄存器，再扩展
-///
-/// ### 4. 零扩展实现
-/// - 在 RISC-V 中，零扩展通常不需要特殊处理，因为寄存器已经足够大
-/// - 如果需要确保只保留最低位，可以使用 `andi result_reg, src_reg, 1`
-/// - 对于立即数，直接使用 `li` 加载即可
-///
-/// ## 寄存器使用
-/// - `t0`: 临时寄存器，用于存放源值（如果需要加载）
-/// - `result_reg`: 结果寄存器，可能是分配的寄存器或临时寄存器
-///
-/// ## 注意事项
-/// - i1 类型在 RISC-V 中通常已经是 i32 的低位
-/// - 零扩展主要是为了类型转换，通常不需要额外的位操作
-/// - 如果源值已经是 0 或 1，直接移动即可
+/// 生成zext指令：将i1类型零扩展到i32
 fn generate_zext_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
     ctx: &mut GenContext,
 ) {
-    // %a1 = zext i1 %a0 to i32
     let src_operand = instruction.get_operand(0);
     if let Some(src_e) = src_operand
         && let Some(src) = src_e.left()
     {
         let result_name = get_value_name(instruction);
-        
-        // 获取结果寄存器
         let result_reg = if let Some(result_loc) = ctx.get_location(&result_name) {
             match result_loc {
                 Location::Reg(reg) => reg.to_string(),
                 Location::Stack(sp_offset) => {
-                    // 如果结果在栈中，先计算到临时寄存器，再存储
                     let temp_reg = "t0";
                     let offset = *sp_offset;
                     let src_reg = get_value_from_reg(src, ctx, temp_reg, asm_builder);
-                    // 零扩展：在 RISC-V 中，i1 值已经是 0 或 1，直接移动即可
                     if src_reg != temp_reg {
                         asm_builder.emit_mv(temp_reg, &src_reg);
                     }
@@ -1170,148 +782,14 @@ fn generate_zext_instruction(
             "t0".to_string()
         };
         
-        // 加载源值
         let src_reg = get_value_from_reg(src, ctx, "t1", asm_builder);
-        
-        // 零扩展：在 RISC-V 中，i1 值已经是 0 或 1，直接移动即可
         if src_reg != result_reg {
-            // 移动到结果寄存器
             asm_builder.emit_mv(&result_reg, &src_reg);
         }
     }
 }
 
-/// 生成 RISC-V 算术运算指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// %result = add i32 %lhs, %rhs
-/// %result = sub i32 %lhs, %rhs
-/// %result = mul i32 %lhs, %rhs
-/// %result = sdiv i32 %lhs, %rhs
-/// %result = srem i32 %lhs, %rhs
-/// ```
-/// - 操作数0 (`lhs`): 左操作数（可以是立即数、变量或临时值）
-/// - 操作数1 (`rhs`): 右操作数（可以是立即数、变量或临时值）
-/// - 结果: 存储运算结果的变量名（通过 `get_value_name()` 获取）
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 加法运算（两个寄存器变量）
-/// ```llvm
-/// ; LLVM IR
-/// %add = add i32 %1, %2
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，`%2` 在寄存器 `t4` 中，结果 `%add` 在寄存器 `t5` 中：
-/// ```asm
-/// add t5, t3, t4       ; t5 = t3 + t4
-/// ```
-///
-/// ### 示例2: 减法运算（一个寄存器变量，一个立即数）
-/// ```llvm
-/// ; LLVM IR
-/// %sub = sub i32 %1, 10
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，结果 `%sub` 在寄存器 `t5` 中：
-/// ```asm
-/// li   t0, 10          ; 加载立即数 10 到 t0
-/// sub  t5, t3, t0      ; t5 = t3 - 10
-/// ```
-/// 或者使用立即数减法指令（如果支持）：
-/// ```asm
-/// subi t5, t3, 10      ; t5 = t3 - 10
-/// ```
-///
-/// ### 示例3: 乘法运算（栈变量）
-/// ```llvm
-/// ; LLVM IR
-/// %mul = mul i32 %1, %2
-/// ```
-/// 假设 `%1` 在栈偏移 `16` 处，`%2` 在栈偏移 `20` 处，结果 `%mul` 在寄存器 `t5` 中：
-/// ```asm
-/// lw   t0, 16(sp)      ; 加载 %1 到 t0
-/// lw   t1, 20(sp)       ; 加载 %2 到 t1
-/// mul  t5, t0, t1       ; t5 = t0 * t1
-/// ```
-///
-/// ### 示例4: 除法运算（有符号除法）
-/// ```llvm
-/// ; LLVM IR
-/// %div = sdiv i32 %1, %2
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，`%2` 在寄存器 `t4` 中，结果 `%div` 在寄存器 `t5` 中：
-/// ```asm
-/// div  t5, t3, t4       ; t5 = t3 / t4 (有符号除法)
-/// ```
-///
-/// ### 示例5: 取余运算（有符号取余）
-/// ```llvm
-/// ; LLVM IR
-/// %rem = srem i32 %1, %2
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，`%2` 在寄存器 `t4` 中，结果 `%rem` 在寄存器 `t5` 中：
-/// ```asm
-/// rem  t5, t3, t4       ; t5 = t3 % t4 (有符号取余)
-/// ```
-///
-/// ## 实现思路
-///
-/// ### 1. 提取操作数
-/// - 从指令中提取左操作数 (`lhs`) 和右操作数 (`rhs`)
-/// - 获取结果变量名 `result_name`（通过 `get_value_name()`）
-///
-/// ### 2. 处理操作数
-/// 操作数可能有以下几种情况：
-/// - **立即数常量**: 使用 `get_value_from_reg()` 加载到临时寄存器（如 `t0` 或 `t1`）
-/// - **寄存器变量**: `Location::Reg(reg)` → 直接使用该寄存器
-/// - **栈变量**: `Location::Stack(offset)` → 使用 `lw` 加载到寄存器
-/// - **全局变量**: `Location::Global(name)` → 使用 `la` + `lw` 加载
-///
-/// ### 3. 获取结果寄存器
-/// - 查询 `ctx.get_location(&result_name)` 获取结果的存储位置
-/// - 如果结果在寄存器中：`Location::Reg(reg)` → 使用该寄存器
-/// - 如果结果在栈中：`Location::Stack(offset)` → 使用临时寄存器 `t2`，然后存储到栈
-/// - 如果没有分配位置（临时值）：使用临时寄存器 `t2`
-///
-/// ### 4. 根据指令类型生成汇编
-///
-/// #### 情况A: 加法 (Add)
-/// 1. 将左操作数加载到临时寄存器 `t0`（通过 `get_value_from_reg()`）
-/// 2. 将右操作数加载到临时寄存器 `t1`（通过 `get_value_from_reg()`）
-/// 3. 使用 `add result_reg, t0, t1` 生成加法指令
-/// 4. 如果结果在栈中，使用 `sw result_reg, offset(sp)` 存储结果
-///
-/// #### 情况B: 减法 (Sub)
-/// 1. 将左操作数加载到临时寄存器 `t0`
-/// 2. 将右操作数加载到临时寄存器 `t1`
-/// 3. 使用 `sub result_reg, t0, t1` 生成减法指令
-/// 4. 如果结果是立即数且支持 `subi`，可以直接使用 `subi result_reg, t0, imm`
-///
-/// #### 情况C: 乘法 (Mul)
-/// 1. 将左操作数加载到临时寄存器 `t0`
-/// 2. 将右操作数加载到临时寄存器 `t1`
-/// 3. 使用 `mul result_reg, t0, t1` 生成乘法指令
-///
-/// #### 情况D: 有符号除法 (SDiv)
-/// 1. 将左操作数加载到临时寄存器 `t0`
-/// 2. 将右操作数加载到临时寄存器 `t1`
-/// 3. 使用 `div result_reg, t0, t1` 生成除法指令（RISC-V 的 `div` 是有符号除法）
-///
-/// #### 情况E: 有符号取余 (SRem)
-/// 1. 将左操作数加载到临时寄存器 `t0`
-/// 2. 将右操作数加载到临时寄存器 `t1`
-/// 3. 使用 `rem result_reg, t0, t1` 生成取余指令（RISC-V 的 `rem` 是有符号取余）
-///
-/// ## 寄存器使用
-/// - `t0`: 临时寄存器，用于存放左操作数
-/// - `t1`: 临时寄存器，用于存放右操作数
-/// - `t2`: 临时寄存器，用于存放结果（当结果未分配到寄存器时）
-///
-/// ## 注意事项
-/// - 所有操作数在处理前都需要加载到寄存器中
-/// - 如果操作数是立即数，需要先通过 `li` 加载到寄存器
-/// - 结果寄存器优先使用分配好的寄存器，其次使用临时寄存器 `t2`
-/// - 如果结果在栈中，需要先将结果计算到寄存器，然后存储到栈上指定偏移位置
+/// 生成算术运算指令：add/sub/mul/sdiv/srem
 fn generate_cal_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
@@ -1352,7 +830,6 @@ fn generate_cal_instruction(
                     }
                 },
                 Location::Stack(sp_offset) => {
-                    // 结果在栈上：先计算到临时寄存器 t2，再存储到栈
                     let result_reg = "t2";
                     match instruction.get_opcode() {
                         InstructionOpcode::Add => {
@@ -1372,13 +849,11 @@ fn generate_cal_instruction(
                         },
                         _ => {}
                     }
-                    // 将计算结果存储到栈上
                     asm_builder.emit_sw(result_reg, *sp_offset, "sp");
                 },
                 Location::Global(name) => {
-                    // 结果在全局变量：先计算到临时寄存器 t2，再存储到全局变量
                     let result_reg = "t2";
-                    let addr_reg = "t3";  // 用于存放全局变量地址
+                    let addr_reg = "t3";
                     match instruction.get_opcode() {
                         InstructionOpcode::Add => {
                             asm_builder.emit_add(result_reg, &lhs_reg, &rhs_reg);
@@ -1397,9 +872,7 @@ fn generate_cal_instruction(
                         },
                         _ => {}
                     }
-                    // 加载全局变量地址到 addr_reg
                     asm_builder.emit_la(addr_reg, &name);
-                    // 将计算结果存储到全局变量地址
                     asm_builder.emit_sw(result_reg, 0, addr_reg);
                 },
                 _ => {}
@@ -1411,145 +884,39 @@ fn generate_cal_instruction(
 }
 
 
-/// 生成 RISC-V store 指令的汇编代码
-///
-/// ## LLVM IR 指令格式
-/// ```
-/// store i32 %source_value, i32* %target_ptr, align 4
-/// ```
-/// - 第0个操作数 (`from`): 要存储的源值（可以是立即数、变量或临时值）
-/// - 第1个操作数 (`to`): 目标指针变量名（来自 alloca 或全局变量）
-///
-/// ## 翻译示例
-///
-/// ### 示例1: 存储到全局变量
-/// ```llvm
-/// ; LLVM IR
-/// store i32 42, i32* @global_var, align 4
-/// ```
-/// 生成汇编：
-/// ```asm
-/// li   t0, 42          ; 加载立即数 42 到 t0
-/// la   t2, global_var  ; 加载全局变量地址到 t2
-/// sw   t0, 0(t2)       ; 将 t0 的值存储到 [t2 + 0]
-/// ```
-///
-/// ### 示例2: 存储到栈变量（alloca）
-/// ```llvm
-/// ; LLVM IR
-/// %local_var = alloca i32, align 4
-/// store i32 %1, i32* %local_var, align 4
-/// ```
-/// 假设 `%1` 在寄存器 `t3` 中，`%local_var` 在栈偏移 `16` 处：
-/// ```asm
-/// mv   t0, t3          ; 将 %1 的值移动到 t0（如果源值已经在寄存器中）
-/// sw   t0, 16(sp)      ; 将 t0 的值存储到栈偏移 16 处
-/// ```
-///
-/// 如果 `%1` 是立即数：
-/// ```asm
-/// li   t0, 100         ; 加载立即数到 t0
-/// sw   t0, 16(sp)      ; 存储到栈
-/// ```
-///
-/// ### 示例3: 存储到寄存器中的指针
-/// ```llvm
-/// ; LLVM IR
-/// store i32 %1, i32* %ptr_reg, align 4
-/// ```
-/// 假设 `%ptr_reg` 在寄存器 `t4` 中（存放内存地址），`%1` 的值在 `t3` 中：
-/// 代码会调用 `load_value_to_reg()` 将源值加载到目标寄存器：
-/// ```asm
-/// mv   t4, t3           ; 将 %1 的值移动到指针寄存器 t4（如果源值在 t3 中）
-/// ```
-/// 或者如果 `%1` 是立即数：
-/// ```asm
-/// li   t4, 100          ; 将立即数 100 加载到指针寄存器 t4
-/// ```
-/// 注意：当前实现将值加载到指针寄存器本身，而非存储到该寄存器指向的内存地址
-///
-/// ## 实现思路
-///
-/// ### 1. 提取操作数
-/// - 从指令中提取源值 (`from`) 和目标指针 (`to`)
-/// - 获取目标指针的名称 `ptr`
-///
-/// ### 2. 处理源值
-/// 源值可能有以下几种情况：
-/// - **立即数常量**: 使用 `get_value_from_reg()` 加载到寄存器（如 `t0`）
-/// - **寄存器变量**: `Location::Reg(reg)` → 直接使用该寄存器
-/// - **栈变量**: `Location::Stack(offset)` → 使用 `lw` 加载到寄存器
-/// - **全局变量**: `Location::Global(name)` → 使用 `la` + `lw` 加载
-///
-/// ### 3. 根据目标指针类型生成指令
-///
-/// #### 情况A: 全局变量
-/// 当 `ctx.is_global(&ptr)` 为 `true` 时：
-/// 1. 将源值加载到临时寄存器 `t0`（通过 `get_value_from_reg()`）
-/// 2. 使用 `la t2, ptr` 将全局变量地址加载到寄存器 `t2`
-/// 3. 使用 `sw t0, 0(t2)` 将源值存储到全局变量地址
-///
-/// #### 情况B: 栈变量 (`Location::Stack(offset)`)
-/// 当目标指针是局部变量（alloca）时：
-/// - `ptr` 在 `ctx.var_locations` 中的 `Location::Stack(offset)` 表示目标在栈上的偏移
-/// - 实现步骤：
-///   1. 将源值加载到临时寄存器 `t0`（通过 `get_value_from_reg()`）
-///   2. 直接使用 `sw t0, offset(sp)` 存储到栈上指定偏移位置
-///
-/// #### 情况C: 寄存器中的指针 (`Location::Reg(reg)`)
-/// 当指针本身存储在寄存器中时（较少见的情况）：
-/// - 寄存器中存放的是内存地址
-/// - 使用 `load_value_to_reg()` 将源值加载到该寄存器指向的地址
-/// - 注意：这种情况下寄存器存储的是地址值，需要间接存储
-///
-/// ## 寄存器使用
-/// - `t0`: 临时寄存器，用于存放源值
-/// - `t2`: 临时寄存器，用于存放全局变量地址（仅在全局变量情况下使用）
-///
-/// ## 与 load 指令的对应关系
-/// - `load`: 从内存读取 → 寄存器
-/// - `store`: 从寄存器写入 → 内存
-/// 两者在目标位置查询和处理逻辑上是对称的
+/// 生成store指令：将源值存储到目标指针指向的位置
 fn generate_store_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
     ctx: &mut GenContext,
 ) {
-    // store i32 %a1, i32* %a0, align 4
     let from_operand = instruction.get_operand(0);
     let to_operand = instruction.get_operand(1);
     let (from, ptr_name) = if let Some(from_e) = from_operand
         && let Some(to_e) = to_operand
         && let Some(from) = from_e.left()
     {
-        // 获取指针操作数：尝试用right()获取PointerValue（store指令的指针操作数应该是指针类型）
         let ptr_name = if let Some(ptr_value) = to_e.right() {
-            // 指针类型，直接获取名称
             if let Ok(name_str) = ptr_value.get_name().to_str() {
                 name_str.to_string()
             } else {
-                return; // 无法获取指针名称，跳过
+                return;
             }
         } else if let Some(to) = to_e.left() {
-            // 如果不是指针类型，尝试用left()获取BasicValueEnum
             get_basic_value_name(to, ctx)
         } else {
-            return; // 无法获取操作数，跳过
+            return;
         };
         (from, ptr_name)
     } else {
-        return; // 没有操作数，跳过
+        return;
     };
     
     if ctx.is_global(&ptr_name) {
-        // lw t0 ()sp / la t0 a1 lw t0 0(t0)
-        let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-        // la t2 a0 把 a0 地址读到寄存器
-        asm_builder.emit_la("t2",&ptr_name);
-        // sw t0 0(t2) 把寄存器 t0 中的值，存入内存地址 [t2 + 0] 处。
-        asm_builder.emit_sw(&from_reg,0,"t2");
+        let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
+        asm_builder.emit_la("t2", &ptr_name);
+        asm_builder.emit_sw(&from_reg, 0, "t2");
     } else {
-        // 存储到寄存器/或者栈中
         let loc_type = ctx.get_location(&ptr_name).map(|loc| match loc {
             Location::Reg(reg) => (Some(reg.clone()), None),
             Location::Stack(sp_offset) => (None, Some(*sp_offset)),
@@ -1558,26 +925,21 @@ fn generate_store_instruction(
         
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
             if let Some(reg) = reg_opt {
-                load_value_to_reg(from,ctx,&reg,asm_builder);
+                load_value_to_reg(from, ctx, &reg, asm_builder);
             } else if let Some(sp_offset) = sp_offset_opt {
-                // 需要区分alloca变量和普通局部变量
                 if ctx.is_alloca(&ptr_name) {
-                    // alloca变量（指针）存储在栈偏移sp_offset处
-                    // 我们需要：
-                    // 1. 先从栈加载指针值：lw ptr_reg, sp_offset(sp)
-                    // 2. 然后将源值存储到指针指向的位置：sw from_reg, 0(ptr_reg)
-                    let ptr_reg = "t2";  // 临时寄存器，用于存放指针值
-                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");  // 加载指针值
-                    let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-                    asm_builder.emit_sw(&from_reg, 0, ptr_reg);      // 使用指针值存储数据
+                    // alloca变量：先加载指针值，再间接存储
+                    let ptr_reg = "t2";
+                    asm_builder.emit_lw(ptr_reg, sp_offset, "sp");
+                    let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
+                    asm_builder.emit_sw(&from_reg, 0, ptr_reg);
                 } else {
-                    // 普通局部变量：直接存储到栈偏移位置
-                    let from_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
+                    // 普通局部变量：直接存储到栈
+                    let from_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
                     asm_builder.emit_sw(&from_reg, sp_offset, "sp");
                 }
             }
         }
-        // 如果找不到location，说明该指针变量未被分配，这不应该发生在正确的LLVM IR中
     }
 }
 
@@ -1727,17 +1089,12 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
                 return reg.to_string();
             },
             Location::Stack(sp_offset) => {
-                // 将数据从栈内存中取出并加载到寄存器中
-                asm_builder.emit_lw(reg_name,*sp_offset,"sp");
+                asm_builder.emit_lw(reg_name, *sp_offset, "sp");
                 return reg_name.to_string();
             },
             Location::Global(name) => {
-                // la 负责拿"地址"，lw 负责拿"内容"。
-                // 获取全局变量地址
-                // la t0 a
-                asm_builder.emit_la(reg_name,name);
-                // lw t0, 0(t0) - 使用寄存器作为基址，而不是符号名
-                asm_builder.emit_lw(reg_name,0,reg_name);
+                asm_builder.emit_la(reg_name, name);
+                asm_builder.emit_lw(reg_name, 0, reg_name);
                 return reg_name.to_string();
             }
         }
@@ -1746,47 +1103,40 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
 }
 
 
-fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,asm_builder: &mut AsmBuilder) {
-    // 判断是否是立即数
-    // 如果是0则返回zero寄存器
-    // 不是则分配到入参的寄存器中
+fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext, reg_name: &str, asm_builder: &mut AsmBuilder) {
     if is_constant(input)
-        && let Some(val) = input.into_int_value().get_zero_extended_constant(){
+        && let Some(val) = input.into_int_value().get_zero_extended_constant()
+    {
         if val == 0 {
-            asm_builder.emit_mv(reg_name,"x0");
+            asm_builder.emit_mv(reg_name, "x0");
             return;
         }
-        asm_builder.emit_li(reg_name,val as i32);
+        asm_builder.emit_li(reg_name, val as i32);
         return;
     }
 
-    //不是立即数而
-    let reg_key =  get_basic_value_name(input, ctx);
+    let reg_key = get_basic_value_name(input, ctx);
     if reg_key.starts_with("tmp_") {
-        asm_builder.emit_mv(reg_name,"x0");
+        asm_builder.emit_mv(reg_name, "x0");
         return;
     }
     if let Some(location) = ctx.get_location(&reg_key) {
         match location {
             Location::Reg(reg) => {
                 if reg != reg_name {
-                    asm_builder.emit_mv(reg_name,reg);
+                    asm_builder.emit_mv(reg_name, reg);
                 }
             },
             Location::Stack(sp_offset) => {
-                // 将数据从栈内存中取出并加载到寄存器中
-                asm_builder.emit_lw(reg_name,*sp_offset,"sp");
+                asm_builder.emit_lw(reg_name, *sp_offset, "sp");
             },
             Location::Global(label) => {
-                // 获取全局变量地址
-                // la t0 a  把 a 的地址 存放到寄存器t0
-                asm_builder.emit_la(reg_name,label);
-                // lw t0 t0 把寄存器地址对应的值取出来放到t0
-                asm_builder.emit_lw(reg_name,0,reg_name);
+                asm_builder.emit_la(reg_name, label);
+                asm_builder.emit_lw(reg_name, 0, reg_name);
             }
         }
-    }else {
-        asm_builder.emit_mv(reg_name,"x0");
+    } else {
+        asm_builder.emit_mv(reg_name, "x0");
     }
 }
 #[cfg(test)]
