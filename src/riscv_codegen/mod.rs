@@ -332,7 +332,7 @@ fn build_function<'ctx>(
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
     let alloctor = AllocatedInnerVar::default();
-    let (allocations, stack_size) = alloctor.allocate(inner_vars, false);
+    let (allocations, stack_size) = alloctor.allocate(inner_vars, true);
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloca_vars(allocations, stack_size);
     
@@ -1664,7 +1664,7 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
             },
             Location::Stack(sp_offset) => {
                 // 将数据从栈内存中取出并加载到寄存器中
-                asm_builder.emit_lw(reg_name,*sp_offset,&format!("{}(sp)",sp_offset));
+                asm_builder.emit_lw(reg_name,*sp_offset,"sp");
                 return reg_name.to_string();
             },
             Location::Global(name) => {
@@ -1740,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn test_part2() {
+    fn  test_part2() {
         let file_path = format!("{}{}", FILE_PATH, "part2.sy");
         let out_path = format!("{}{}", FILE_PATH, "part2.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
