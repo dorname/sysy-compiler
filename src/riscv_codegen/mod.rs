@@ -67,13 +67,13 @@ pub struct GenContext {
     stack_size: usize,                        // 总栈大小
     global_names: Vec<String>,                // 全局变量名列表
     temp_val_num: usize,
-    alloca_names: HashSet<String>,           // alloca变量名集合
+    alloc_name: HashSet<String>,           // alloca变量名集合
     pure_stack_mode: bool,                   // 是否为纯栈分配模式
 }
 
 impl GenContext {
     pub fn get_alloca_names(&self) -> &HashSet<String> {
-        &self.alloca_names
+        &self.alloc_name
     }
     
     pub fn new() -> Self {
@@ -82,7 +82,7 @@ impl GenContext {
             stack_size: 0,
             global_names: Vec::new(),
             temp_val_num: 0,
-            alloca_names: HashSet::new(),
+            alloc_name: HashSet::new(),
             pure_stack_mode: false,
         }
     }
@@ -91,16 +91,16 @@ impl GenContext {
         self.pure_stack_mode = enabled;
     }
     
-    pub fn set_alloca_names(&mut self, alloca_names: HashSet<String>) {
-        self.alloca_names = alloca_names;
+    pub fn set_alloc_names(&mut self, alloc_name: HashSet<String>) {
+        self.alloc_name = alloc_name;
     }
     
     /// 检查是否为alloca变量（纯栈模式下返回false）
-    pub fn is_alloca(&self, name: &str) -> bool {
+    pub fn is_alloc(&self, name: &str) -> bool {
         if self.pure_stack_mode {
             return false;
         }
-        self.alloca_names.contains(name)
+        self.alloc_name.contains(name)
     }
 
     pub fn add_global(&mut self, name: String) {
@@ -114,7 +114,7 @@ impl GenContext {
     }
 
     /// 记录寄存器分配结果：将分配器返回的字符串转换为Location
-    pub fn record_alloca_vars(&mut self, allocation: HashMap<String, String>, stack_size: usize) {
+    pub fn record_alloc_vars(&mut self, allocation: HashMap<String, String>, stack_size: usize) {
         self.stack_size = stack_size;
 
         for (var, loc_str) in allocation {
@@ -333,6 +333,7 @@ fn build_function<'ctx>(
             let val_name = get_value_name(&instruction);
             // 收集函数内部使用了哪些变量
             let uses = collect_uses(&instruction, &mut ctx);
+            // dbg!(&uses);
             // 保存到函数状态中
             state.record_instruction(idx, val_name, uses);
             state.idx = idx + 1;
@@ -343,49 +344,18 @@ fn build_function<'ctx>(
     let inner_vars = state.compute_liveness();
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
-    let pure_stack_mode = false; //Part2使用纯栈分配模式
-    let alloctor = AllocatedInnerVar::default();
-    let (allocations, stack_size) = alloctor.allocate(inner_vars, pure_stack_mode);
+    let alloc = AllocatedInnerVar::default();
+    let (allocations, stack_size) = alloc.allocate(inner_vars, ctx.pure_stack_mode);
+
     // 记录变量分配好的存储位置和预计使用的栈空间
-    ctx.record_alloca_vars(allocations, stack_size);
-    
-    // 设置纯栈分配模式标志
-    ctx.set_pure_stack_mode(pure_stack_mode);
-    
-    // 步骤5：为alloca变量分配栈位置（仅在纯栈分配模式下）
-    // 在纯栈分配模式下，alloca变量应该直接存储值，而不是存储指针
-    // 关键问题：alloca变量（如%c）在Store/Load指令中被使用，但它们的名称是alloca变量的名称
-    // 如果alloca变量已经在活跃区间中被分配了位置，应该使用那个位置
-    // 如果alloca变量没有在活跃区间中被分配，需要在步骤5中为它们分配位置
-    // 但是，在纯栈分配模式下，alloca变量应该使用它们在活跃区间中被分配的位置
-    // 而不是在步骤5中重新分配位置
-    
-    // 注意：alloca变量（如%c）在LLVM IR中是指针类型，但在纯栈分配模式下，
-    // Store和Load指令应该直接使用alloca变量的栈位置，而不是通过指针间接访问
-    
-    // 在纯栈分配模式下，alloca变量应该已经在活跃区间中被分配了位置
-    // 如果alloca变量没有在活跃区间中被分配，说明它没有被使用，不需要分配位置
-    // 但是，为了确保所有alloca变量都有位置，我们仍然检查并分配
-    let mut alloca_stack_offset = ctx.stack_size as i32;
-    for alloca_name in state.get_allocation_names() {
-        // 如果alloca变量还没有被分配location，为它分配栈位置
-        if ctx.get_location(&alloca_name).is_none() {
-            ctx.var_locations.insert(alloca_name.clone(), Location::Stack(alloca_stack_offset));
-            alloca_stack_offset += 4; // 每个变量占用4字节
-        }
-    }
-    // 更新栈大小以包含alloca变量
-    if alloca_stack_offset > ctx.stack_size as i32 {
-        ctx.stack_size = alloca_stack_offset as usize;
-    }
+    ctx.record_alloc_vars(allocations, stack_size);
     
     // 将alloca变量集合传递给GenContext，用于区分alloca变量和普通局部变量
-    ctx.set_alloca_names(state.get_allocation_names().clone());
+    ctx.set_alloc_names(state.get_allocation_names().clone());
 
     // ==========================================
     // 汇编生成阶段
     // ==========================================
-
     // 步骤1：生成函数声明和标签
     // 1.1 声明.text段
     asm_builder.emit_text_section();
@@ -766,7 +736,7 @@ fn generate_load_instruction(
         // FIX: 如果loc_type为None，说明ptr_name不是一个有效的变量（可能是立即数或临时值），直接返回
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
             // FIX: alloca变量应该始终使用栈存储，即使它被分配到了寄存器
-            if ctx.is_alloca(&ptr_name) {
+            if ctx.is_alloc(&ptr_name) {
                 if let Some(sp_offset) = sp_offset_opt {
                     // alloca变量：先加载指针值，再间接加载数据
                     let ptr_reg = "t1";
@@ -1017,7 +987,7 @@ fn generate_store_instruction(
         // FIX: 如果loc_type为None，说明ptr_name不是一个有效的变量（可能是立即数或临时值），直接返回
         if let Some((reg_opt, sp_offset_opt)) = loc_type {
             // FIX: alloca变量应该始终使用栈存储，即使它被分配到了寄存器
-            if ctx.is_alloca(&ptr_name) {
+            if ctx.is_alloc(&ptr_name) {
                 if let Some(sp_offset) = sp_offset_opt {
                     // alloca变量：先加载指针值，再间接存储
                     let ptr_reg = "t2";
@@ -1168,6 +1138,15 @@ fn generate_icmp_instruction(
     }
 }
 
+fn get_value_from_basic(input:BasicValueEnum) -> String {
+    let cstr = input.get_name();
+    let name = if let Ok(name_str) = cstr.to_str() {
+        name_str
+    }else {
+        return "x0".to_string();
+    };
+    name.to_string()
+}
 
 fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,asm_builder: &mut AsmBuilder) -> String {
     // 判断是否是立即数
@@ -1182,8 +1161,8 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
         return reg_name.to_string();
     }
 
-    //不是立即数而
-    let reg_key =  get_basic_value_name(input, ctx);
+    // 读取分配
+    let reg_key =  get_value_from_basic(input);
     if let Some(location) = ctx.get_location(&reg_key) {
         match location {
             Location::Reg(reg) => {
