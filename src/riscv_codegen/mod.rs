@@ -67,13 +67,13 @@ pub struct GenContext {
     stack_size: usize,                        // 总栈大小
     global_names: Vec<String>,                // 全局变量名列表
     temp_val_num: usize,
-    alloc_name: HashSet<String>,           // alloca变量名集合
+    allocated_vals: HashSet<String>,           // alloca变量名集合
     pure_stack_mode: bool,                   // 是否为纯栈分配模式
 }
 
 impl GenContext {
-    pub fn get_alloca_names(&self) -> &HashSet<String> {
-        &self.alloc_name
+    pub fn get_allocated_vals(&self) -> &HashSet<String> {
+        &self.allocated_vals
     }
     
     pub fn new() -> Self {
@@ -82,7 +82,7 @@ impl GenContext {
             stack_size: 0,
             global_names: Vec::new(),
             temp_val_num: 0,
-            alloc_name: HashSet::new(),
+            allocated_vals: HashSet::new(),
             pure_stack_mode: false,
         }
     }
@@ -91,8 +91,8 @@ impl GenContext {
         self.pure_stack_mode = enabled;
     }
     
-    pub fn set_alloc_names(&mut self, alloc_name: HashSet<String>) {
-        self.alloc_name = alloc_name;
+    pub fn set_allocated_vals(&mut self, allocated_vals: HashSet<String>) {
+        self.allocated_vals = allocated_vals;
     }
     
     /// 检查是否为alloca变量（纯栈模式下返回false）
@@ -100,7 +100,7 @@ impl GenContext {
         if self.pure_stack_mode {
             return false;
         }
-        self.alloc_name.contains(name)
+        self.allocated_vals.contains(name)
     }
 
     pub fn add_global(&mut self, name: String) {
@@ -145,7 +145,7 @@ impl GenContext {
 /// 第一次遍历状态：收集指令的def/use信息
 struct FunctionState {
     instructions: Vec<(usize, String, Vec<String>)>, // (指令索引, 变量名, 使用的变量集合)
-    allocation_names: HashSet<String>,               // alloca变量集合
+    allocated_vals: HashSet<String>,               // 记录已经分配了存储空间的数据
     block_start_idxes: HashMap<String, usize>,       // 基本块起始位置
     loop_branch: bool,                               // 是否存在循环
     idx: usize,                                      // 当前指令索引
@@ -155,7 +155,7 @@ impl FunctionState {
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
-            allocation_names: HashSet::new(),
+            allocated_vals: HashSet::new(),
             block_start_idxes: HashMap::new(),
             loop_branch: false,
             idx: 0,
@@ -171,8 +171,8 @@ impl FunctionState {
     }
 
     /// 记录alloca变量名
-    pub fn record_local_val(&mut self, name: String) {
-        self.allocation_names.insert(name);
+    pub fn record_allocated_val(&mut self, name: String) {
+        self.allocated_vals.insert(name);
     }
 
     /// 记录基本块起始索引
@@ -189,8 +189,8 @@ impl FunctionState {
     pub fn has_loop(&self) -> bool {
         self.loop_branch
     }
-    pub fn get_allocation_names(&self) -> &HashSet<String> {
-        &self.allocation_names
+    pub fn get_allocated_vals(&self) -> &HashSet<String> {
+        &self.allocated_vals
     }
     pub fn get_block_idx(&self, block_name: &str) -> Option<usize> {
         self.block_start_idxes.get(block_name).copied()
@@ -234,7 +234,7 @@ impl FunctionState {
         let mut inner_vars = Vec::<InnerVar>::new();
         for (val_name, start_idx) in first {
             let mut end_idx = last.get(&val_name).unwrap_or(&start_idx).clone();
-            if self.loop_branch && self.allocation_names.contains(&val_name) {
+            if self.loop_branch && self.allocated_vals.contains(&val_name) {
                 end_idx = *max_pos;
             }
             inner_vars.push(InnerVar::new(val_name.to_string(), start_idx, end_idx));
@@ -308,11 +308,11 @@ fn build_function<'ctx>(
             let opcode = instruction.get_opcode();
             let idx = state.current_idx();
 
-            // 2.1 收集定义变量集合（局部变量）
+            // 2.1 收集定义变量集合
             if matches!(opcode, InstructionOpcode::Alloca) {
                 let name = get_value_name(&instruction);
                 if !name.is_empty() {
-                    state.record_local_val(name);
+                    state.record_allocated_val(name);
                 }
             }
 
@@ -333,7 +333,7 @@ fn build_function<'ctx>(
             let val_name = get_value_name(&instruction);
             // 收集函数内部使用了哪些变量
             let uses = collect_uses(&instruction, &mut ctx);
-            // dbg!(&uses);
+
             // 保存到函数状态中
             state.record_instruction(idx, val_name, uses);
             state.idx = idx + 1;
@@ -350,8 +350,8 @@ fn build_function<'ctx>(
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloc_vars(allocations, stack_size);
     
-    // 将alloca变量集合传递给GenContext，用于区分alloca变量和普通局部变量
-    ctx.set_alloc_names(state.get_allocation_names().clone());
+    // 将alloca变量集合传递给GenContext，用于区分已被分配空间的变量和临时变量
+    ctx.set_allocated_vals(state.get_allocated_vals().clone());
 
     // ==========================================
     // 汇编生成阶段
@@ -1143,11 +1143,13 @@ fn get_value_from_basic(input:BasicValueEnum) -> String {
     let name = if let Ok(name_str) = cstr.to_str() {
         name_str
     }else {
+        // 防御性处理：实际上走到这个分支的可能很小
         return "x0".to_string();
     };
     name.to_string()
 }
 
+/// 从存储位置取值：全局变量、栈空间和寄存器
 fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,asm_builder: &mut AsmBuilder) -> String {
     // 判断是否是立即数
     // 如果是0则返回zero寄存器
@@ -1179,11 +1181,6 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
             }
         }
     }
-    // FIX: 当找不到location时，不应该返回x0（零寄存器），而应该使用临时寄存器加载该值
-    // 这种情况通常发生在值没有被正确分配位置时，应该从栈或全局变量加载
-    // 但由于我们不知道具体位置，这里使用临时寄存器并初始化为0，或者报错
-    // 实际上，这种情况不应该发生，如果发生了，说明寄存器分配有问题
-    // 为了安全起见，我们使用临时寄存器并初始化为0
     asm_builder.emit_li(reg_name, 0);
     reg_name.to_string()
 }
