@@ -135,7 +135,7 @@ pub struct LinearScan {
 }
 
 impl LinearScan {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut regs = Vec::<String>::new();
             
         // 1. 首先添加临时寄存器（最优先）
@@ -379,7 +379,7 @@ impl RegisterAllocator for LinearScan {
     /// // allocation_map 包含变量到寄存器/栈位置的映射
     /// // stack_size 表示所需的栈空间大小
     /// ```
-    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize) { 
+    fn allocate(&mut self,allocation_names:Vec<InnerVar>)->(HashMap<String, String>,usize) {
         let mut allocation_names = allocation_names.clone();
         // 根据起始区间进行排序
         allocation_names.sort_by_key(|v| v.get_start_offset());
@@ -483,16 +483,23 @@ mod tests {
     #[test]
     fn test_only_stack2(){
         let mut allocator = NoAlloc::default();
-        // 由于生命周期没有重合所以栈空间可以完全复用
+           // 生命周期没有重合的栈空间可以完全复用
         // 由于hashmap的无序性分配的栈偏移也具有随机性，但栈空间基本是定的
         let mocks:Vec<InnerVar> = vec![
-            InnerVar::new("a".to_string(), 0, 10), // -4  -> 12
-            InnerVar::new("b".to_string(), 5, 20), // -8 -> 8
-            InnerVar::new("c".to_string(), 21, 30), // -8 -> 8
-            InnerVar::new("d".to_string(), 5, 40),  // -12 -> 4
-            InnerVar::new("e".to_string(), 20, 50), // -4 -> 12
-            InnerVar::new("f".to_string(), 3, 60), // -16 -> 0
+            InnerVar::new("a".to_string(), 0, 10), 
+            InnerVar::new("b".to_string(), 5, 20), 
+            InnerVar::new("c".to_string(), 21, 30), 
+            InnerVar::new("d".to_string(), 5, 40),  
+            InnerVar::new("e".to_string(), 20, 50), 
+            InnerVar::new("f".to_string(), 3, 60), 
         ];
+        // 基于start_offset排序 a f b d e c
+        // a -4 -> 12  
+        // f -8 -> 8
+        // b -12 -> 4
+        // d -16 -> 0
+        // e -4  -> 12
+        // c -12 -> 4
         let (_, stack_size) = allocator.allocate(mocks);
         assert_eq!(stack_size, 16);
     }

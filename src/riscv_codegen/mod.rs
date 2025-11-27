@@ -113,7 +113,58 @@ impl GenContext {
         self.var_locations.get(name)
     }
 
-    /// 记录寄存器分配结果：将分配器返回的字符串转换为Location
+    /// 记录寄存器分配结果：将分配器返回的字符串转换为 `Location` 枚举
+    ///
+    /// 该函数接收寄存器分配器返回的分配结果，将字符串格式的位置信息
+    /// （如 `"t0"`、`"4(sp)"`）转换为 `Location` 枚举类型，并更新上下文中的
+    /// 变量位置映射和栈大小信息。
+    ///
+    /// # 参数
+    ///
+    /// * `allocation` - 寄存器分配器返回的分配结果映射表
+    ///   - 键：变量名称（`String`）
+    ///   - 值：位置字符串（`String`），格式为：
+    ///     - 寄存器位置：`"t0"`、`"s1"`、`"a2"` 等
+    ///     - 栈位置：`"0(sp)"`、`"4(sp)"`、`"8(sp)"` 等（格式：`"{offset}(sp)"`）
+    /// * `stack_size` - 函数所需的总栈空间大小（字节数）
+    ///
+    /// # 行为
+    ///
+    /// 1. **更新栈大小**：将 `stack_size` 保存到上下文中
+    /// 2. **转换位置格式**：
+    ///    - 如果位置字符串以 `"(sp)"` 结尾，解析为 `Location::Stack(offset)`
+    ///    - 否则，解析为 `Location::Reg(register_name)`
+    /// 3. **保护全局变量**：如果变量已经是全局变量（`Location::Global`），
+    ///    则跳过该变量，不覆盖其位置信息
+    /// 4. **更新映射表**：将转换后的 `Location` 插入到 `var_locations` 中
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let mut ctx = GenContext::new();
+    /// 
+    /// // 寄存器分配器返回的结果
+    /// let allocation = HashMap::from([
+    ///     ("var1".to_string(), "t0".to_string()),      // 寄存器分配
+    ///     ("var2".to_string(), "4(sp)".to_string()),   // 栈分配
+    ///     ("var3".to_string(), "s1".to_string()),      // 寄存器分配
+    /// ]);
+    /// 
+    /// ctx.record_alloc_vars(allocation, 16);
+    /// 
+    /// // 现在可以通过 get_location() 查询变量位置
+    /// assert_eq!(ctx.get_location("var1"), Some(&Location::Reg("t0".to_string())));
+    /// assert_eq!(ctx.get_location("var2"), Some(&Location::Stack(4)));
+    /// assert_eq!(ctx.get_location("var3"), Some(&Location::Reg("s1".to_string())));
+    /// assert_eq!(ctx.get_stack_size(), 16);
+    /// ```
+    ///
+    /// # 注意
+    ///
+    /// - 该函数通常在寄存器分配完成后调用，用于将分配结果记录到代码生成上下文中
+    /// - 全局变量的位置不会被覆盖，即使分配结果中包含该变量
+    /// - 栈位置字符串必须符合 `"{offset}(sp)"` 格式，否则 `parse()` 会 panic
+    /// - 该函数会更新 `stack_size`，用于后续生成函数 prologue/epilogue
     pub fn record_alloc_vars(&mut self, allocation: HashMap<String, String>, stack_size: usize) {
         self.stack_size = stack_size;
 
@@ -390,7 +441,6 @@ fn build_function<'ctx>(
             generate_instruction(&instruction, asm_builder, &mut ctx);
         }
     }
-
 }
 
 /// 检测循环检测
@@ -661,6 +711,17 @@ fn generate_return_instruction(
 }
 
 /// 生成load指令：从指针指向的位置加载值到寄存器
+/// (1) 全局变量
+/// ```
+///   @x = global i32 56
+///   %val = load i32, i32* @x, align 4
+/// ```
+/// (2) 局部变量
+/// ```
+///   %a = alloca i32, align 4  
+///   store i32 1, i32* %a, align 4
+///   %val = load i32, i32* %a, align 4
+/// ```
 fn generate_load_instruction(
     instruction: &InstructionValue,
     asm_builder: &mut AsmBuilder,
@@ -1008,7 +1069,6 @@ fn generate_store_instruction(
                 asm_builder.emit_sw(&from_reg, sp_offset, "sp");
             }
         } else {
-            // FIX: ptr_name不在ctx中，说明这不是一个有效的变量，不能作为指针使用
             return;
         }
     }
@@ -1138,6 +1198,34 @@ fn generate_icmp_instruction(
     }
 }
 
+/// 从 `BasicValueEnum` 中提取变量名称
+///
+/// 该函数从 LLVM IR 的 `BasicValueEnum` 值中获取变量名称，用于后续查找
+/// 该变量在寄存器分配结果中的存储位置（寄存器、栈或全局变量）。
+///
+/// # 参数
+///
+/// * `input` - LLVM IR 中的基本值枚举，可以是变量、常量等
+///
+/// # 返回值
+///
+/// 返回变量的名称字符串。如果无法从 C 字符串转换为有效的 UTF-8 字符串
+/// （例如包含无效字节序列），则返回 `"x0"` 作为默认值。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// // 假设 LLVM IR 中有变量 %var1
+/// let value: BasicValueEnum = ...;
+/// let name = get_value_from_basic(value);
+/// // name = "var1"
+/// ```
+///
+/// # 注意
+///
+/// - 正常情况下，LLVM IR 中的变量名都是有效的 UTF-8 字符串，返回 `"x0"` 的情况极少发生
+/// - 返回 `"x0"` 是一种防御性处理，用于避免程序崩溃
+/// - 该函数主要用于获取变量名，以便通过 `GenContext::get_location()` 查找变量的存储位置
 fn get_value_from_basic(input:BasicValueEnum) -> String {
     let cstr = input.get_name();
     let name = if let Ok(name_str) = cstr.to_str() {
@@ -1159,6 +1247,8 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,
         if val == 0 {
             return "x0".to_string();
         }
+        // li指令：将立即数加载到寄存器中
+        // li a0, 10 => a0 = 10
         asm_builder.emit_li(reg_name,val as i32);
         return reg_name.to_string();
     }
@@ -1224,6 +1314,7 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext, reg_name: &str
 }
 #[cfg(test)]
 mod tests {
+    use crate::riscv_codegen::register_alloc::{LinearScan, NoAlloc, RegisterAllocator};
     use super::*;
 
     const FILE_PATH: &str = "tests/lab6/";
@@ -1254,10 +1345,61 @@ mod tests {
 
     #[test]
     fn test_ir() {
-        let file_path = format!("{}{}", FILE_PATH, "part2.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part2.ll");
+        let file_path = format!("{}{}", FILE_PATH, "part4.sy");
+        let out_path = format!("{}{}", FILE_PATH, "part4.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input,&out_path);
         let _ = scanner.scan_collect();
+    }
+
+
+    #[test]
+    fn test_record_loc(){
+        let mut allocator = LinearScan::new();
+        let mocks:Vec<InnerVar> = vec![
+            InnerVar::new("a".to_string(), 0, 10),
+            InnerVar::new("b".to_string(), 5, 20),
+            InnerVar::new("c".to_string(), 21, 30),
+            InnerVar::new("d".to_string(), 22, 40),
+            InnerVar::new("e".to_string(), 20, 50),
+            InnerVar::new("f".to_string(), 11, 60),
+        ];
+        // 由线性扫描器扫描之后的顺序是 a(0,10) b(5,20) f(11,60) e(20,50) c(21,30) d(22,40)
+        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });
+        let mut gen_context = GenContext::new();
+        gen_context.record_alloc_vars(allocation_map, stack_size);
+        println!("{:?}",gen_context.var_locations);
+    }
+
+    #[test]
+    fn test_record_loc1(){
+        let mut allocator = NoAlloc::default();
+        // 生命周期没有重合的栈空间可以完全复用
+        // 由于hashmap的无序性分配的栈偏移也具有随机性，但栈空间基本是定的
+        let mocks:Vec<InnerVar> = vec![
+            InnerVar::new("a".to_string(), 0, 10),
+            InnerVar::new("b".to_string(), 5, 20),
+            InnerVar::new("c".to_string(), 21, 30),
+            InnerVar::new("d".to_string(), 5, 40),
+            InnerVar::new("e".to_string(), 20, 50),
+            InnerVar::new("f".to_string(), 3, 60),
+        ];
+        // 基于start_offset排序 a f b d e c
+        // a -4 -> 12
+        // f -8 -> 8
+        // b -12 -> 4
+        // d -16 -> 0
+        // e -4  -> 12
+        // c -12 -> 4
+        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });
+        let mut gen_context = GenContext::new();
+        gen_context.record_alloc_vars(allocation_map, stack_size);
+        println!("{:?}",gen_context.var_locations);
     }
 }
