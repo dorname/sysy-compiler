@@ -486,7 +486,7 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
             {
                 // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(lhs) {
-                    let name = get_basic_value_name(lhs, ctx);
+                    let name = get_value_from_basic(lhs);
                     // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
                     if !name.starts_with("tmp_") {
                         uses.push(name);
@@ -498,7 +498,7 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
             {
                 // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(rhs) {
-                    let name = get_basic_value_name(rhs, ctx);
+                    let name = get_value_from_basic(rhs);
                     // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
                     if !name.starts_with("tmp_") {
                         uses.push(name);
@@ -522,7 +522,7 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
                 } else if let Some(ptr_value) = value_operand.left() {
                     // 如果left()也能获取到值（可能是通过alloca创建的指针），也处理
                     if !is_constant(ptr_value) {
-                        let name = get_basic_value_name(ptr_value, ctx);
+                        let name = get_value_from_basic(ptr_value);
                         if !name.starts_with("tmp_") {
                             uses.push(name);
                         }
@@ -536,7 +536,7 @@ fn collect_uses(instruction: &InstructionValue, ctx: &mut GenContext) -> Vec<Str
             {
                 // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(value) {
-                    let name = get_basic_value_name(value, ctx);
+                    let name = get_value_from_basic(value);
                     // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
                     if !name.starts_with("tmp_") {
                         uses.push(name);
@@ -562,18 +562,6 @@ fn get_value_name(instruction: &InstructionValue) -> String {
 
 fn is_constant(value: BasicValueEnum) -> bool {
      value.is_int_value() && value.into_int_value().is_constant_int()
-}
-
-/// 获取操作数名字
-fn get_basic_value_name(value: BasicValueEnum, ctx: &mut GenContext) -> String {
-    if let Ok(name_cstr) = value.get_name().to_str()
-        && !name_cstr.is_empty()
-    {
-        return name_cstr.to_string();
-    }
-    let num_str = ctx.temp_val_num.to_string();
-    ctx.temp_val_num += 1;
-    format!("tmp_{}", num_str)
 }
 
 /// 第二次遍历：生成指令代码
@@ -679,7 +667,7 @@ fn generate_load_instruction(
             if is_constant(ptr_basic) {
                 return;
             }
-            let name = get_basic_value_name(ptr_basic, ctx);
+            let name = get_value_from_basic(ptr_basic);
             // FIX: 如果获取的名称是临时名称（以"tmp_"开头），说明这不是一个有效的变量名，不能作为指针使用
             if name.starts_with("tmp_") {
                 return;
@@ -959,7 +947,7 @@ fn generate_store_instruction(
             if is_constant(to) {
                 return;
             }
-            let name = get_basic_value_name(to, ctx);
+            let name = get_value_from_basic(to);
             // FIX: 如果获取的名称是临时名称（以"tmp_"开头），说明这不是一个有效的变量名，不能作为指针使用
             if name.starts_with("tmp_") {
                 return;
@@ -1149,76 +1137,224 @@ fn get_value_from_basic(input:BasicValueEnum) -> String {
     name.to_string()
 }
 
-/// 从存储位置取值：全局变量、栈空间和寄存器
+/// 从存储位置获取值到寄存器，返回包含该值的寄存器名称
+///
+/// 该函数负责将 LLVM 值（常量、变量等）从不同的存储位置（寄存器、栈、全局变量）
+/// 加载到指定的寄存器中，以便在后续指令中使用。函数会智能地处理不同的存储位置，
+/// 避免不必要的加载操作。
+///
+/// # 参数
+/// * `input` - 需要获取的 LLVM 值（`BasicValueEnum`）
+/// * `ctx` - 代码生成上下文（`GenContext`），包含变量的位置信息映射
+/// * `reg_name` - 目标寄存器名称（如 "t0", "t1"），当需要加载值时使用此寄存器
+/// * `asm_builder` - 汇编代码构建器（`AsmBuilder`），用于生成加载指令
+///
+/// # 返回值
+/// 返回包含该值的寄存器名称（`String`）。可能的返回值：
+/// * 寄存器名称（如 "t0", "s1" 等）：值已在该寄存器中或已加载到该寄存器
+/// * "x0"：零寄存器，用于常量 0
+///
+/// # 处理逻辑
+/// 函数按以下顺序处理不同类型的值：
+///
+/// 1. **常量值（立即数）**：
+///    - 如果值为常量 0，直接返回 "x0"（零寄存器），无需生成指令
+///    - 其他常量值使用 `li` 指令加载到 `reg_name` 中
+///    - 生成指令：`li {reg_name}, {value}`
+///
+/// 2. **已在寄存器中的值**：
+///    - 如果值已经分配在某个寄存器中，直接返回该寄存器名称
+///    - **优化**：避免不必要的移动指令，直接使用原寄存器
+///
+/// 3. **栈上的值**：
+///    - 使用 `lw` 指令从栈偏移位置加载到 `reg_name`
+///    - 生成指令：`lw {reg_name}, {offset}(sp)`
+///    - 返回 `reg_name`
+///
+/// 4. **全局变量**：
+///    - 使用 `la` 指令加载全局变量的地址到 `reg_name`
+///    - 然后使用 `lw` 指令从该地址加载值
+///    - 生成指令：
+///      * `la {reg_name}, {label}`
+///      * `lw {reg_name}, 0({reg_name})`
+///    - 返回 `reg_name`
+///
+/// 5. **未知值（未在上下文中找到）**：
+///    - 如果无法确定值的位置，加载常量 0 到 `reg_name`
+///    - 生成指令：`li {reg_name}, 0`
+///    - 返回 `reg_name`
+///
+/// # 示例
+/// ```
+/// // 假设有一个变量 "x" 已分配在寄存器 "t3" 中
+/// let reg = get_value_from_reg(value_x, ctx, "t0", asm_builder);
+/// // 返回 "t3"，无需生成加载指令
+///
+/// // 假设有一个变量 "y" 在栈偏移 8 处
+/// let reg = get_value_from_reg(value_y, ctx, "t0", asm_builder);
+/// // 生成: lw t0, 8(sp)
+/// // 返回 "t0"
+///
+/// // 假设有一个常量 42
+/// let reg = get_value_from_reg(const_42, ctx, "t0", asm_builder);
+/// // 生成: li t0, 42
+/// // 返回 "t0"
+/// ```
 fn get_value_from_reg(input: BasicValueEnum, ctx: &mut GenContext,reg_name:&str,asm_builder: &mut AsmBuilder) -> String {
-    // 判断是否是立即数
-    // 如果是0则返回zero寄存器
-    // 不是则分配到入参的寄存器中
+    // 判断是否是立即数,如果是0则返回zero寄存器,不是则分配到入参的寄存器中
     if is_constant(input)
         && let Some(val) = input.into_int_value().get_zero_extended_constant(){
         if val == 0 {
             return "x0".to_string();
         }
+        // 加载立即数 load immediate
+        // li {reg_name}, {value}
         asm_builder.emit_li(reg_name,val as i32);
         return reg_name.to_string();
     }
 
-    // 读取分配
-    let reg_key =  get_value_from_basic(input);
-    if let Some(location) = ctx.get_location(&reg_key) {
+    // 如果不是立即数,读取操作数名称，并获取其存储位置
+    let val_name =  get_value_from_basic(input);
+    if let Some(location) = ctx.get_location(&val_name) {
         match location {
+            // 如果是寄存器，直接返回寄存器名称
             Location::Reg(reg) => {
                 return reg.to_string();
             },
+            // 如果是栈，则加载栈值到寄存器
             Location::Stack(sp_offset) => {
+                // 加载栈值 load word
+                // lw {reg_name}, {offset}(sp)
                 asm_builder.emit_lw(reg_name, *sp_offset, "sp");
                 return reg_name.to_string();
             },
+            // 如果是全局变量，则加载全局变量值到寄存器
             Location::Global(name) => {
+                // 加载全局变量 load address
+                // la {reg_name}, {name}
                 asm_builder.emit_la(reg_name, name);
+                // 加载全局变量值 load word
+                // lw {reg_name}, 0({reg_name})
                 asm_builder.emit_lw(reg_name, 0, reg_name);
                 return reg_name.to_string();
             }
         }
     }
+    // 如果操作数名称不在ctx中，则加载立即数0到寄存器
+    // li {reg_name}, 0
     asm_builder.emit_li(reg_name, 0);
+    // 返回寄存器名称
     reg_name.to_string()
 }
 
 
+/// 将值加载到指定的目标寄存器中
+///
+/// 该函数负责将 LLVM 值（常量、变量等）从不同的存储位置（寄存器、栈、全局变量）
+/// 加载到指定的目标寄存器中。与 `get_value_from_reg` 不同，本函数总是将值加载到
+/// 目标寄存器，即使值已经在其他寄存器中也会执行移动操作。
+///
+/// # 参数
+/// * `input` - 需要加载的 LLVM 值（`BasicValueEnum`）
+/// * `ctx` - 代码生成上下文（`GenContext`），包含变量的位置信息映射
+/// * `reg_name` - 目标寄存器名称（如 "t0", "t1"），值将被加载到此寄存器
+/// * `asm_builder` - 汇编代码构建器（`AsmBuilder`），用于生成加载指令
+///
+/// # 处理逻辑
+/// 函数按以下顺序处理不同类型的值：
+///
+/// 1. **常量值（立即数）**：
+///    - 如果值为常量 0，使用 `mv` 指令将零寄存器复制到目标寄存器
+///      - 生成指令：`mv {reg_name}, x0`
+///    - 其他常量值使用 `li` 指令直接加载到目标寄存器
+///      - 生成指令：`li {reg_name}, {value}`
+///    - **优化**：常量直接加载到目标寄存器，无需中间步骤
+///
+/// 2. **已在寄存器中的值**：
+///    - 如果源寄存器与目标寄存器不同，使用 `mv` 指令移动值
+///      - 生成指令：`mv {reg_name}, {reg}`
+///    - 如果源寄存器与目标寄存器相同，不生成任何指令（避免冗余移动）
+///
+/// 3. **栈上的值**：
+///    - 使用 `lw` 指令从栈偏移位置直接加载到目标寄存器
+///    - 生成指令：`lw {reg_name}, {offset}(sp)`
+///
+/// 4. **全局变量**：
+///    - 使用 `la` 指令加载全局变量的地址到目标寄存器
+///    - 然后使用 `lw` 指令从该地址加载值
+///    - 生成指令：
+///      * `la {reg_name}, {label}`
+///      * `lw {reg_name}, 0({reg_name})`
+///
+/// 5. **未知值（特殊情况）**：
+///    - 如果无法确定值的位置或没有名称，将零寄存器复制到目标寄存器
+///    - 生成指令：`mv {reg_name}, x0`
+///
+/// # 与 `get_value_from_reg` 的区别
+/// - `get_value_from_reg`：如果值已在寄存器中，直接返回该寄存器名称，不生成移动指令
+/// - `load_value_to_reg`：总是将值加载到指定的目标寄存器，即使需要移动也会生成指令
+///
+/// # 示例
+/// ```
+/// // 假设有一个变量 "x" 已分配在寄存器 "t3" 中，需要加载到 "t0"
+/// load_value_to_reg(value_x, ctx, "t0", asm_builder);
+/// // 生成: mv t0, t3
+///
+/// // 假设有一个变量 "y" 在栈偏移 8 处，需要加载到 "t0"
+/// load_value_to_reg(value_y, ctx, "t0", asm_builder);
+/// // 生成: lw t0, 8(sp)
+///
+/// // 假设有一个常量 42，需要加载到 "t0"
+/// load_value_to_reg(const_42, ctx, "t0", asm_builder);
+/// // 生成: li t0, 42
+/// ```
 fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext, reg_name: &str, asm_builder: &mut AsmBuilder) {
+    //  如果 操作数是 常量 则为立即数
     if is_constant(input)
         && let Some(val) = input.into_int_value().get_zero_extended_constant()
     {
         if val == 0 {
+            // 如果常量是0，则直接移动到x0寄存器
             asm_builder.emit_mv(reg_name, "x0");
             return;
         }
+        // 加载立即数 load immediate
+        // li {reg_name}, {value}
         asm_builder.emit_li(reg_name, val as i32);
         return;
     }
 
-    let reg_key = get_basic_value_name(input, ctx);
-    if reg_key.starts_with("tmp_") {
-        asm_builder.emit_mv(reg_name, "x0");
-        return;
-    }
-    if let Some(location) = ctx.get_location(&reg_key) {
+    // 如果不是立即数,读取操作数名称，并获取其存储位置
+    let val_name = get_value_from_basic(input);
+    if let Some(location) = ctx.get_location(&val_name) {
         match location {
+            // 如果是寄存器，则直接移动到目标寄存器
             Location::Reg(reg) => {
                 if reg != reg_name {
+                    // 源寄存器和目标寄存器不是一个寄存器
+                    // mv {reg_name}, {reg}
                     asm_builder.emit_mv(reg_name, reg);
                 }
             },
+            // 如果是栈，则加载栈值到目标寄存器
             Location::Stack(sp_offset) => {
+                // 加载栈值 load word
+                // lw {reg_name}, {offset}(sp)
                 asm_builder.emit_lw(reg_name, *sp_offset, "sp");
             },
+            // 如果是全局变量，则加载全局变量值到目标寄存器
             Location::Global(label) => {
+                // 加载全局变量 load address
+                // la {reg_name}, {label}
                 asm_builder.emit_la(reg_name, label);
+                // 加载全局变量值 load word
+                // lw {reg_name}, 0({reg_name})
                 asm_builder.emit_lw(reg_name, 0, reg_name);
             }
         }
     } else {
+        // 其他特殊情况，则移动到x0寄存器
+        // mv {reg_name}, x0
         asm_builder.emit_mv(reg_name, "x0");
     }
 }
