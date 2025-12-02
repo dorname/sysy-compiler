@@ -1537,4 +1537,117 @@ mod tests {
         gen_context.record_alloc_vars(allocation_map, stack_size);
         println!("{:?}",gen_context.var_locations);
     }
+
+    #[test]
+    fn test_get_val_from_reg(){
+        use inkwell::context::Context;
+        
+        let mut allocator = LinearScan::new();
+        let mocks:Vec<InnerVar> = vec![
+            InnerVar::new("a".to_string(), 0, 10),
+            InnerVar::new("b".to_string(), 5, 20),
+            InnerVar::new("c".to_string(), 21, 30),
+            InnerVar::new("d".to_string(), 5, 40),
+            InnerVar::new("e".to_string(), 20, 50),
+            InnerVar::new("f".to_string(), 3, 60),
+        ];
+        // 基于start_offset排序 a f b d e c
+        // a -4 -> 12
+        // f -8 -> 8
+        // b -12 -> 4
+        // d -16 -> 0
+        // e -4  -> 12
+        // c -12 -> 4
+        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });
+        let mut gen_context = GenContext::new();
+        gen_context.record_alloc_vars(allocation_map, stack_size);
+        
+        // 创建 LLVM Context 用于构建常量值
+        let context = Context::create();
+        let i32_type = context.i32_type();
+        let mut asm_builder = AsmBuilder::new();
+        
+        // 测试立即数0 - 应该返回 "x0"
+        let const_zero = i32_type.const_int(0, false).into();
+        let reg_zero = get_value_from_reg(const_zero, &mut gen_context, "t0", &mut asm_builder);
+        assert_eq!(reg_zero, "x0", "常量0应该返回x0寄存器");
+        println!("测试立即数0: 返回寄存器 = {}", reg_zero);
+        
+        // 测试立即数1 - 应该生成 li t0, 1 并返回 "t0"
+        let const_one = i32_type.const_int(1, false).into();
+        let reg_one = get_value_from_reg(const_one, &mut gen_context, "t0", &mut asm_builder);
+        assert_eq!(reg_one, "t0", "常量1应该加载到t0并返回t0");
+        println!("测试立即数1: 返回寄存器 = {}", reg_one);
+        
+        // 测试全局变量 - 需要先添加全局变量
+        gen_context.add_global("global_var".to_string());
+        println!("测试全局变量: global_var 已添加到上下文");
+        assert!(gen_context.is_global("global_var"), "global_var 应该是全局变量");
+        assert!(
+            matches!(gen_context.get_location("global_var"), Some(Location::Global(_))),
+            "global_var 应该是全局变量位置"
+        );
+        // 注意：由于无法在单元测试中直接创建有名的基础值（BasicValueEnum），
+        // 全局变量的完整测试需要在集成测试中使用真实的 LLVM IR
+        
+        // 测试栈变量 - 从分配结果中找到栈变量
+        let stack_vars: Vec<_> = gen_context.var_locations.iter()
+            .filter(|(_, loc)| matches!(loc, Location::Stack(_)))
+            .collect();
+        if !stack_vars.is_empty() {
+            for (var_name, loc) in stack_vars {
+                if let Location::Stack(offset) = loc {
+                    println!("测试栈变量: 找到栈变量 {} 在栈偏移 {}", var_name, offset);
+                    // 验证栈变量位置正确
+                    assert!(
+                        matches!(gen_context.get_location(var_name), Some(Location::Stack(o)) if o == offset),
+                        "栈变量位置应该正确"
+                    );
+                }
+            }
+        } else {
+            println!("测试栈变量: 未找到栈变量（可能所有变量都在寄存器中）");
+        }
+        
+        // 测试寄存器变量 - 从分配结果中找到寄存器变量
+        let reg_vars: Vec<_> = gen_context.var_locations.iter()
+            .filter(|(_, loc)| matches!(loc, Location::Reg(_)))
+            .collect();
+        if !reg_vars.is_empty() {
+            for (var_name, loc) in reg_vars {
+                if let Location::Reg(reg) = loc {
+                    println!("测试寄存器变量: 找到寄存器变量 {} 在寄存器 {}", var_name, reg);
+                    // 验证寄存器变量位置正确
+                    let expected_reg = reg.clone();
+                    assert!(
+                        matches!(gen_context.get_location(var_name), Some(Location::Reg(r)) if r == &expected_reg),
+                        "寄存器变量位置应该正确"
+                    );
+                }
+            }
+        } else {
+            println!("测试寄存器变量: 未找到寄存器变量");
+        }
+        
+        // 测试未知变量 - 验证未知变量不在上下文中
+        let unknown_var = "unknown_var_12345";
+        assert!(
+            gen_context.get_location(unknown_var).is_none(),
+            "未知变量不应该在上下文中"
+        );
+        println!("测试未知变量: {} 不在上下文中（符合预期）", unknown_var);
+        // 注意：由于无法直接创建 BasicValueEnum 来表示未知变量，
+        // 完整的未知变量测试需要在集成测试中使用真实的 LLVM IR
+        
+        // 打印生成的汇编代码以验证
+        let asm_code = asm_builder.emit();
+        println!("\n生成的汇编代码:\n{}", asm_code);
+        
+        // 验证汇编代码包含预期的指令
+        assert!(asm_code.contains("li t0, 1"), "汇编代码应该包含 li t0, 1 指令");
+        println!("\n所有测试通过！");
+    }
 }
