@@ -1449,6 +1449,8 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext, reg_name: &str
 }
 #[cfg(test)]
 mod tests {
+    use inkwell::AddressSpace;
+    use inkwell::values::BasicValue;
     use crate::riscv_codegen::register_alloc::{LinearScan, NoAlloc, RegisterAllocator};
     use super::*;
 
@@ -1583,16 +1585,14 @@ mod tests {
         println!("测试立即数1: 返回寄存器 = {}", reg_one);
         
         // 测试全局变量 - 需要先添加全局变量
+        let module = context.create_module("test");
+        let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
         gen_context.add_global("global_var".to_string());
         println!("测试全局变量: global_var 已添加到上下文");
-        assert!(gen_context.is_global("global_var"), "global_var 应该是全局变量");
-        assert!(
-            matches!(gen_context.get_location("global_var"), Some(Location::Global(_))),
-            "global_var 应该是全局变量位置"
-        );
-        // 注意：由于无法在单元测试中直接创建有名的基础值（BasicValueEnum），
-        // 全局变量的完整测试需要在集成测试中使用真实的 LLVM IR
-        
+        let reg_global = get_value_from_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
+        assert_eq!(reg_global,"t1","全局变量应该加载到t1");
+        println!("测试全局变量: 返回寄存器 = {}", reg_global);
+
         // 测试栈变量 - 从分配结果中找到栈变量
         let stack_vars: Vec<_> = gen_context.var_locations.iter()
             .filter(|(_, loc)| matches!(loc, Location::Stack(_)))
@@ -1649,5 +1649,59 @@ mod tests {
         // 验证汇编代码包含预期的指令
         assert!(asm_code.contains("li t0, 1"), "汇编代码应该包含 li t0, 1 指令");
         println!("\n所有测试通过！");
+    }
+
+    #[test]
+    fn test_load_val_to_reg(){
+        use inkwell::context::Context;
+
+        let mut allocator = LinearScan::new();
+        let mocks:Vec<InnerVar> = vec![
+            InnerVar::new("a".to_string(), 0, 10),
+            InnerVar::new("b".to_string(), 5, 20),
+            InnerVar::new("c".to_string(), 21, 30),
+            InnerVar::new("d".to_string(), 5, 40),
+            InnerVar::new("e".to_string(), 20, 50),
+            InnerVar::new("f".to_string(), 3, 60),
+        ];
+        // 基于start_offset排序 a f b d e c
+        // a -4 -> 12
+        // f -8 -> 8
+        // b -12 -> 4
+        // d -16 -> 0
+        // e -4  -> 12
+        // c -12 -> 4
+        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });
+        let mut gen_context = GenContext::new();
+        gen_context.record_alloc_vars(allocation_map, stack_size);
+
+        // 创建 LLVM Context 用于构建常量值
+        let context = Context::create();
+        let i32_type = context.i32_type();
+        let mut asm_builder = AsmBuilder::new();
+
+        // 测试立即数0 - 打印 mv t0, x0
+        let const_zero = i32_type.const_int(0, false).into();
+        load_value_to_reg(const_zero, &mut gen_context, "t0", &mut asm_builder);
+        println!("{:?}", asm_builder.emit());
+
+        // 测试立即数10 - 会多打印 li t0, 10
+        let ten = i32_type.const_int(10, false).into();
+        load_value_to_reg(ten, &mut gen_context, "t0", &mut asm_builder);
+        println!("{:?}", asm_builder.emit());
+
+        // 测试全局变量 - 需要先添加全局变量
+        let module = context.create_module("test");
+        let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
+        gen_context.add_global("global_var".to_string());
+        println!("测试全局变量: global_var 已添加到上下文");
+        load_value_to_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
+        println!("{:?}", asm_builder.emit());
+
+        // 测试
+
     }
 }
