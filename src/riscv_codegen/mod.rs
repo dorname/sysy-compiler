@@ -1449,6 +1449,7 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &mut GenContext, reg_name: &str
 }
 #[cfg(test)]
 mod tests {
+    use std::arch::asm;
     use inkwell::AddressSpace;
     use inkwell::values::BasicValue;
     use crate::riscv_codegen::register_alloc::{LinearScan, NoAlloc, RegisterAllocator};
@@ -1545,6 +1546,7 @@ mod tests {
         use inkwell::context::Context;
         
         let mut allocator = LinearScan::new();
+        let mut only_stack_alloc = NoAlloc::default();
         let mocks:Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
@@ -1560,94 +1562,88 @@ mod tests {
         // d -16 -> 0
         // e -4  -> 12
         // c -12 -> 4
-        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        let (allocation_map, stack_size) = allocator.allocate(mocks.clone());
         allocation_map.iter().for_each(|map| {
             println!("{:?}", map);
         });
         let mut gen_context = GenContext::new();
         gen_context.record_alloc_vars(allocation_map, stack_size);
-        
+
+        // 纯栈分配
+        let (stack_allocation_map, stack_size) = only_stack_alloc.allocate(mocks);
+        stack_allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });        let mut stack_gen_context = GenContext::new();
+        stack_gen_context.record_alloc_vars(stack_allocation_map, stack_size);
+
         // 创建 LLVM Context 用于构建常量值
         let context = Context::create();
         let i32_type = context.i32_type();
         let mut asm_builder = AsmBuilder::new();
-        
+
+        // 纯栈分配类型
+        let stack_ctx = Context::create();
+        let i32_type_s = context.i32_type();
+
         // 测试立即数0 - 应该返回 "x0"
         let const_zero = i32_type.const_int(0, false).into();
         let reg_zero = get_value_from_reg(const_zero, &mut gen_context, "t0", &mut asm_builder);
-        assert_eq!(reg_zero, "x0", "常量0应该返回x0寄存器");
-        println!("测试立即数0: 返回寄存器 = {}", reg_zero);
-        
+        // 立即数0不会产生汇编
+        assert_eq!(reg_zero, "x0");
+
         // 测试立即数1 - 应该生成 li t0, 1 并返回 "t0"
         let const_one = i32_type.const_int(1, false).into();
-        let reg_one = get_value_from_reg(const_one, &mut gen_context, "t0", &mut asm_builder);
-        assert_eq!(reg_one, "t0", "常量1应该加载到t0并返回t0");
-        println!("测试立即数1: 返回寄存器 = {}", reg_one);
+        let _ = get_value_from_reg(const_one, &mut gen_context, "t0", &mut asm_builder);
         
         // 测试全局变量 - 需要先添加全局变量
         let module = context.create_module("test");
         let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
         gen_context.add_global("global_var".to_string());
-        println!("测试全局变量: global_var 已添加到上下文");
-        let reg_global = get_value_from_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
-        assert_eq!(reg_global,"t1","全局变量应该加载到t1");
-        println!("测试全局变量: 返回寄存器 = {}", reg_global);
+        let _ = get_value_from_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
 
         // 测试栈变量 - 从分配结果中找到栈变量
-        let stack_vars: Vec<_> = gen_context.var_locations.iter()
-            .filter(|(_, loc)| matches!(loc, Location::Stack(_)))
-            .collect();
-        if !stack_vars.is_empty() {
-            for (var_name, loc) in stack_vars {
-                if let Location::Stack(offset) = loc {
-                    println!("测试栈变量: 找到栈变量 {} 在栈偏移 {}", var_name, offset);
-                    // 验证栈变量位置正确
-                    assert!(
-                        matches!(gen_context.get_location(var_name), Some(Location::Stack(o)) if o == offset),
-                        "栈变量位置应该正确"
-                    );
-                }
-            }
-        } else {
-            println!("测试栈变量: 未找到栈变量（可能所有变量都在寄存器中）");
+        let stack_builder = stack_ctx.create_builder();
+        let stack_module = stack_ctx.create_module("stack_test");
+        let void_type = stack_ctx.void_type().fn_type(&[],false);
+        let func = stack_module.add_function("test_fn", void_type, None);
+        let entry = stack_ctx.append_basic_block(func, "entry");
+        stack_builder.position_at_end(entry);
+        if let Ok(stack_test) =  stack_builder.build_alloca(i32_type_s,"f"){
+            let _ = get_value_from_reg(stack_test.as_basic_value_enum(),&mut stack_gen_context,"t1",&mut asm_builder);
         }
-        
+
         // 测试寄存器变量 - 从分配结果中找到寄存器变量
-        let reg_vars: Vec<_> = gen_context.var_locations.iter()
-            .filter(|(_, loc)| matches!(loc, Location::Reg(_)))
-            .collect();
-        if !reg_vars.is_empty() {
-            for (var_name, loc) in reg_vars {
-                if let Location::Reg(reg) = loc {
-                    println!("测试寄存器变量: 找到寄存器变量 {} 在寄存器 {}", var_name, reg);
-                    // 验证寄存器变量位置正确
-                    let expected_reg = reg.clone();
-                    assert!(
-                        matches!(gen_context.get_location(var_name), Some(Location::Reg(r)) if r == &expected_reg),
-                        "寄存器变量位置应该正确"
-                    );
-                }
-            }
-        } else {
-            println!("测试寄存器变量: 未找到寄存器变量");
+        let builder = context.create_builder();
+        let void_type = context.void_type().fn_type(&[],false);
+        let func = module.add_function("test_fn", void_type, None);
+        let entry = context.append_basic_block(func, "entry");
+        builder.position_at_end(entry);
+        if let Ok(local_var_test) =  builder.build_alloca(i32_type,"f"){
+            let var_reg = get_value_from_reg(local_var_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+            // 线性扫描算法给f分配的的t4寄存器
+            assert_eq!(var_reg, "t4");
         }
-        
         // 测试未知变量 - 验证未知变量不在上下文中
-        let unknown_var = "unknown_var_12345";
-        assert!(
-            gen_context.get_location(unknown_var).is_none(),
-            "未知变量不应该在上下文中"
-        );
-        println!("测试未知变量: {} 不在上下文中（符合预期）", unknown_var);
-        // 注意：由于无法直接创建 BasicValueEnum 来表示未知变量，
-        // 完整的未知变量测试需要在集成测试中使用真实的 LLVM IR
-        
+        if let Ok(unknown_test) =  builder.build_alloca(i32_type,"fb"){
+            let var_reg = get_value_from_reg(unknown_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+            // fb 不存在 所以返回t1
+            assert_eq!(var_reg, "t1");
+        }
         // 打印生成的汇编代码以验证
         let asm_code = asm_builder.emit();
         println!("\n生成的汇编代码:\n{}", asm_code);
-        
         // 验证汇编代码包含预期的指令
+        // 验证立即数1 li t0 1
         assert!(asm_code.contains("li t0, 1"), "汇编代码应该包含 li t0, 1 指令");
+        // 验证全局变量 la t1 global_var lw t1 0(t1)
+        assert!(asm_code.contains("la t1, global_var"), "汇编代码应该包含 la t1 global_var 指令");
+        assert!(asm_code.contains("lw t1, 0(t1)"), "汇编代码应该包含 lw t1 0(t1) 指令");
+
+        // 验证从栈中取值到寄存器 lw t1, 8(sp)
+        assert!(asm_code.contains("lw t1, 8(sp)"), "汇编代码应该包含 lw t1, 8(sp) 指令");
+
+        // 验证未知变量存储寄存器 li t1, 0
+        assert!(asm_code.contains("li t1, 0"),"汇编代码应该包含 lw t1, 0 指令");
         println!("\n所有测试通过！");
     }
 
@@ -1656,6 +1652,8 @@ mod tests {
         use inkwell::context::Context;
 
         let mut allocator = LinearScan::new();
+        let mut only_stack_alloc = NoAlloc::default();
+
         let mocks:Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
@@ -1671,37 +1669,93 @@ mod tests {
         // d -16 -> 0
         // e -4  -> 12
         // c -12 -> 4
-        let (allocation_map, stack_size) = allocator.allocate(mocks);
+        let (allocation_map, stack_size) = allocator.allocate(mocks.clone());
         allocation_map.iter().for_each(|map| {
             println!("{:?}", map);
         });
+
+        // 纯栈分配
+        let (stack_allocation_map, stack_size) = only_stack_alloc.allocate(mocks);
+        stack_allocation_map.iter().for_each(|map| {
+            println!("{:?}", map);
+        });
+
         let mut gen_context = GenContext::new();
         gen_context.record_alloc_vars(allocation_map, stack_size);
+
+        let mut stack_gen_context = GenContext::new();
+        stack_gen_context.record_alloc_vars(stack_allocation_map, stack_size);
 
         // 创建 LLVM Context 用于构建常量值
         let context = Context::create();
         let i32_type = context.i32_type();
         let mut asm_builder = AsmBuilder::new();
 
+        // 纯栈分配类型
+        let stack_ctx = Context::create();
+        let i32_type_s = context.i32_type();
+
+
         // 测试立即数0 - 打印 mv t0, x0
         let const_zero = i32_type.const_int(0, false).into();
         load_value_to_reg(const_zero, &mut gen_context, "t0", &mut asm_builder);
-        println!("{:?}", asm_builder.emit());
+
 
         // 测试立即数10 - 会多打印 li t0, 10
         let ten = i32_type.const_int(10, false).into();
         load_value_to_reg(ten, &mut gen_context, "t0", &mut asm_builder);
-        println!("{:?}", asm_builder.emit());
+
 
         // 测试全局变量 - 需要先添加全局变量
         let module = context.create_module("test");
         let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
         gen_context.add_global("global_var".to_string());
-        println!("测试全局变量: global_var 已添加到上下文");
         load_value_to_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
-        println!("{:?}", asm_builder.emit());
 
-        // 测试
+        // 测试栈变量 - 从分配结果中找到栈变量
+        let stack_builder = stack_ctx.create_builder();
+        let stack_module = stack_ctx.create_module("stack_test");
+        let void_type = stack_ctx.void_type().fn_type(&[],false);
+        let func = stack_module.add_function("test_fn", void_type, None);
+        let entry = stack_ctx.append_basic_block(func, "entry");
+        stack_builder.position_at_end(entry);
+        if let Ok(stack_test) =  stack_builder.build_alloca(i32_type_s,"f"){
+             load_value_to_reg(stack_test.as_basic_value_enum(),&mut stack_gen_context,"t1",&mut asm_builder);
+        }
+
+        // 测试寄存器变量 - 从分配结果中找到寄存器变量
+        let builder = context.create_builder();
+        let void_type = context.void_type().fn_type(&[],false);
+        let func = module.add_function("test_fn", void_type, None);
+        let entry = context.append_basic_block(func, "entry");
+        builder.position_at_end(entry);
+        if let Ok(local_var_test) =  builder.build_alloca(i32_type,"f"){
+            load_value_to_reg(local_var_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        }
+
+        // 测试未知变量 - 验证未知变量不在上下文中
+        if let Ok(unknown_test) =  builder.build_alloca(i32_type,"fb"){
+            load_value_to_reg(unknown_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        }
+
+        let asm_code = asm_builder.emit();
+        println!("\n生成的汇编代码:\n{}", asm_code);
+        // 验证加载立即数0
+        assert!(asm_code.contains("mv t0, x0"),"汇编需要包含 mv t0, x0指令");
+        // 验证立即数10
+        assert!(asm_code.contains("li t0, 10"),"汇编需要包含 li t0, 10指令");
+        // 验证全局变量
+        assert!(asm_code.contains("la t1, global_var"),"汇编需要包含 la t1, global_var指令");
+        assert!(asm_code.contains("lw t1, 0(t1)"),"汇编需要包含 lw t1, 0(t1)指令");
+
+        // 验证把值从栈加载到寄存器
+        assert!(asm_code.contains("lw t1, 8(sp)"),"汇编需要包含 lw t1, 8(sp)指令");
+
+        // 验证把值从寄存器加载到另一个寄存器
+        assert!(asm_code.contains("mv t1, t4"),"汇编需要包含 mv t1, t4指令");
+
+        // 验证未知变量加载到另一个寄存器
+        assert!(asm_code.contains("mv t1, x0"),"汇编需要包含 mv t1, x0指令");
 
     }
 }
