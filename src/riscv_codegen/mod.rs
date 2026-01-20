@@ -1094,8 +1094,9 @@ fn generate_icmp_instruction(
                     "t2".to_string()
                 };
 
-                // 先做减法，然后与立即数0比较
+                // 先做减法，然后与立即数0比较 sub rd rs2
                 asm_builder.emit_sub(&result_reg,&l_reg,&r_reg);
+                // seqz(set if equal zero) 如果 t2 寄存器中的值为0 则往 result_reg 寄存器中写入1 否则 写入 0 seqz rd rs1
                 asm_builder.emit_seqz(&result_reg,"t2");
             }
             // !=
@@ -1115,6 +1116,7 @@ fn generate_icmp_instruction(
 
                 // 先做减法，然后与立即数0比较
                 asm_builder.emit_sub(&result_reg,&l_reg,&r_reg);
+                // snez (set if not equal zero) 如果 t2 寄存器中的值 不为 0 则往result_reg 寄存器中写入1 否则 写入 0 snez rd rs1
                 asm_builder.emit_snez(&result_reg,"t2");
 
             }
@@ -1132,7 +1134,9 @@ fn generate_icmp_instruction(
                 }else {
                     "t2".to_string()
                 };
-                asm_builder.emit_sgt(&l_reg,&r_reg,&result_reg);
+                // asm 支持伪指令
+                // sgt rd, rs1, rs2
+                asm_builder.emit_sgt(&result_reg,&l_reg,&r_reg);
             }
             // <
             IntPredicate::SLT => {
@@ -1148,7 +1152,8 @@ fn generate_icmp_instruction(
                 }else {
                     "t2".to_string()
                 };
-                asm_builder.emit_slt(&l_reg,&r_reg,&result_reg);
+                // slt rd, rs1, rs2
+                asm_builder.emit_slt(&result_reg,&l_reg,&r_reg);
             }
             // >=
             IntPredicate::SLE => {
@@ -1164,7 +1169,12 @@ fn generate_icmp_instruction(
                 }else {
                     "t2".to_string()
                 };
-                asm_builder.emit_sle(&l_reg,&r_reg,&result_reg);
+                // 伪指令
+                // sle rd,rs1,rs2
+                // 实际：
+                // slt rd, rs2, rs1   # rd = (rs2 < rs1) ? 1 : 0
+                // xori rd, rd, 1     # rd = rd ^ 1  => 取反，得到 (rs1 <= rs2)
+                asm_builder.emit_sle(&result_reg,&l_reg,&r_reg);
             }
             // <=
             IntPredicate::SGE => {
@@ -1180,7 +1190,9 @@ fn generate_icmp_instruction(
                 }else {
                     "t2".to_string()
                 };
-                asm_builder.emit_sge(&l_reg,&r_reg,&result_reg);
+                // 伪指令
+                // sgt rd, rs1, rs2
+                asm_builder.emit_sge(&result_reg,&l_reg,&r_reg);
             }
             _ => {}
         }
