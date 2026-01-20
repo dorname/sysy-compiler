@@ -623,12 +623,12 @@ fn generate_instruction(
     // TODO: 根据instruction类型生成相应代码
     match instruction.get_opcode() {
         InstructionOpcode::ICmp => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // %cmp = icmp sgt i32 %a1, 3
             generate_icmp_instruction(instruction, asm_builder, ctx);
         }
         InstructionOpcode::Store => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // store i32 %a1, i32* %a0, align 4
             generate_store_instruction(instruction, asm_builder, ctx);
         }
@@ -637,7 +637,7 @@ fn generate_instruction(
         | InstructionOpcode::Mul
         | InstructionOpcode::SDiv
         | InstructionOpcode::SRem => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // %add = add i32 %a1, 3
             // %sub = sub i32 %a1, 3
             // %mul = mul i32 %a1, 3
@@ -646,22 +646,22 @@ fn generate_instruction(
             generate_cal_instruction(instruction, asm_builder, ctx);
         }
         InstructionOpcode::Load => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // %a1 = load i32, i32* %a0, align 4
             generate_load_instruction(instruction, asm_builder, ctx);
         }
         InstructionOpcode::Br => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // br label %label
             generate_br_instruction(instruction, asm_builder, ctx);
         }
         InstructionOpcode::ZExt => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // %a1 = zext i1 %a0 to i32
             generate_zext_instruction(instruction, asm_builder, ctx);
         }
         InstructionOpcode::Return => {
-            // 汇编例子：
+            // LLVM-IR例子：
             // ret i32 %a1
             generate_return_instruction(instruction, asm_builder, ctx);
         }
