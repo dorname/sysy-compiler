@@ -514,16 +514,7 @@ fn collect_uses(instruction: &InstructionValue) -> Vec<String> {
     let mut uses = Vec::new();
     let opcode = instruction.get_opcode();
     match opcode {
-        // 二元运算指令：收集两个操作数
-        // add, sub, mul, sdiv, srem指令的例子
-        // add i32 %1, i32 %2 -> %3
-        // sub i32 %1, i32 %2 -> %3
-        // mul i32 %1, i32 %2 -> %3
-        // sdiv i32 %1, i32 %2 -> %3
-        // srem i32 %1, i32 %2 -> %3
-        // store指令的例子： store i32 %1, i32* %0, align 4
-        // 收集value和ptr操作数
-        // icmp指令的例子： icmp eq i32 %1, i32 %2 -> %3
+        // 收集算数指令的使用地址
         InstructionOpcode::ICmp
         | InstructionOpcode::Store
         | InstructionOpcode::Add
@@ -531,66 +522,44 @@ fn collect_uses(instruction: &InstructionValue) -> Vec<String> {
         | InstructionOpcode::Mul
         | InstructionOpcode::SDiv
         | InstructionOpcode::SRem => {
+            // 收集<op1>
             if let Some(lhs_operand) = instruction.get_operand(0)
                 && let Some(lhs) = lhs_operand.left()
             {
-                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(lhs) {
                     let name = get_value_from_basic(lhs);
-                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
-                    if !name.starts_with("tmp_") {
-                        uses.push(name);
-                    }
+                    uses.push(name);
                 }
             }
+            // 收集<op2>
             if let Some(rhs_operand) = instruction.get_operand(1)
                 && let Some(rhs) = rhs_operand.left()
             {
-                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(rhs) {
                     let name = get_value_from_basic(rhs);
-                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
-                    if !name.starts_with("tmp_") {
-                        uses.push(name);
-                    }
+                    uses.push(name);
+
                 }
             }
         }
-        // load指令的例子： load i32, i32* %0, align 4
-        // br指令的例子： br label %target 分支指令
-        // zext指令的例子： zext i1 %1 to i32 -> %2
         InstructionOpcode::Load => {
-            // FIX: Load指令的operand 0是指针，应该使用right()获取指针值
-            if let Some(value_operand) = instruction.get_operand(0) {
-                if let Some(ptr_value) = value_operand.right() {
-                    // 指针是指针类型，获取指针的名称
-                    if let Ok(name_str) = ptr_value.get_name().to_str() {
-                        if !name_str.is_empty() {
-                            uses.push(name_str.to_string());
-                        }
-                    }
-                } else if let Some(ptr_value) = value_operand.left() {
-                    // 如果left()也能获取到值（可能是通过alloca创建的指针），也处理
-                    if !is_constant(ptr_value) {
-                        let name = get_value_from_basic(ptr_value);
-                        if !name.starts_with("tmp_") {
-                            uses.push(name);
-                        }
-                    }
+            // <pointer>
+            if let Some(value_operand) = instruction.get_operand(0)
+            && let Some(ptr_value) = value_operand.left() {
+                if !is_constant(ptr_value) {
+                    let name = get_value_from_basic(ptr_value);
+                    uses.push(name);
                 }
             }
+
         }
         InstructionOpcode::Br | InstructionOpcode::ZExt => {
             if let Some(value_operand) = instruction.get_operand(0)
                 && let Some(value) = value_operand.left()
             {
-                // FIX: 过滤掉立即数，立即数不应该被纳入活跃区间计算
                 if !is_constant(value) {
                     let name = get_value_from_basic(value);
-                    // FIX: 过滤掉临时名称（立即数会被转换为临时名称）
-                    if !name.starts_with("tmp_") {
-                        uses.push(name);
-                    }
+                    uses.push(name);
                 }
             }
         }
