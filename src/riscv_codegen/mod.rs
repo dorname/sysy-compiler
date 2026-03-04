@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::process::Output;
-
+use tklog::{trace,debug, error, fatal, info,warn};
 use crate::riscv_codegen::register_alloc::{AllocatedInnerVar, InnerVar, Location};
 use crate::{
     gen_llvm_ir::{IrSession, Scanner},
@@ -23,7 +23,7 @@ pub mod register_alloc;
 
 pub fn generate_asm(input: &str, output: &str) -> Result<(), String> {
     let scanner = Scanner::new(input, output);
-    let _ = scanner.scan_collect_asm(|ir_session, output| Ok(parse_llvm_ir(ir_session, output)));
+    let _ = scanner.scan_collect_asm("temp.ll",|ir_session, output| Ok(parse_llvm_ir(ir_session, output)));
     Ok(())
 }
 
@@ -266,7 +266,7 @@ impl FunctionState {
         // 遍历指令集
         for (idx, val_name, uses) in self.instructions.iter() {
             // 如果名称不是临时变量或者常量，则说明是定义的变量，计算对应的活跃区间
-            if !val_name.is_empty() && !val_name.starts_with("tmp_") {
+            if !val_name.is_empty()  {
                 // 记录第一次出现的位置，entry方法是如果hash表中为空才会插入，否则不插入
                 first.entry(val_name.to_string()).or_insert(*idx);
                 // 记录最后一次出现的位置
@@ -274,7 +274,7 @@ impl FunctionState {
             }
             // 开始根据被使用的位置信息，更新活跃区间
             for use_name in uses {
-                if !use_name.is_empty() && !use_name.starts_with("tmp_") {
+                if !use_name.is_empty(){
                     first.entry(use_name.to_string()).or_insert(*idx);
                     last.insert(use_name.to_string(), *idx);
                 }
@@ -398,6 +398,9 @@ fn build_function<'ctx>(
     let alloc = AllocatedInnerVar::default();
     let (allocations, stack_size) = alloc.allocate(inner_vars, ctx.pure_stack_mode);
 
+    // allocations.iter().for_each(|map| {
+    //     println!("{:?}", map);
+    // });
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloc_vars(allocations, stack_size);
     
@@ -1037,7 +1040,7 @@ fn generate_cal_instruction(
     asm_builder: &mut AsmBuilder,
     ctx: &GenContext,
 ) {
-    
+    info!(instruction.to_string());
     let lhs_operand = instruction.get_operand(0);
     let rhs_operand = instruction.get_operand(1);
     if let Some(lhs_e) = lhs_operand
@@ -1046,10 +1049,13 @@ fn generate_cal_instruction(
     && let Some(rhs) = rhs_e.left() {
         let lhs_reg = get_value_from_reg(lhs,ctx,"t0",asm_builder);
         let rhs_reg = get_value_from_reg(rhs,ctx,"t1",asm_builder);
+        info!("左侧：",lhs.to_string(),";右侧：",rhs.to_string());
         let result_name = get_value_name(instruction);
+        info!("结果名称",result_name);
         // 获取结果存储位置
         let result_loc = ctx.get_location(&result_name);
         if let Some(result_loc) = result_loc {
+            info!("结果存储位置",result_loc.get_name());
             match result_loc {
                 // 存储在寄存器
                 Location::Reg(reg) => {
@@ -1098,6 +1104,7 @@ fn generate_cal_instruction(
                 },
                 //存储在全局变量
                 Location::Global(name) => {
+                    info!("全局变量",name);
                     let result_reg = "t2";
                     let addr_reg = "t3";
                     match instruction.get_opcode() {
@@ -1218,7 +1225,7 @@ fn generate_store_instruction(
             },
             Location::Stack(sp_offset) => {
                 let value_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-                asm_builder.emit_sw(&value_reg,*sp_offset,&ptr_name)
+                asm_builder.emit_sw(&value_reg,*sp_offset,"sp")
             },
             _=>{},
         }
@@ -1678,6 +1685,7 @@ mod tests {
     use std::arch::asm;
     use inkwell::AddressSpace;
     use inkwell::values::BasicValue;
+    use crate::log_init;
     use crate::riscv_codegen::register_alloc::{LinearScan, NoAlloc, RegisterAllocator};
     use super::*;
 
@@ -1701,8 +1709,17 @@ mod tests {
 
     #[test]
     fn  test_part3() {
+        log_init();
         let file_path = format!("{}{}", FILE_PATH, "part3.sy");
         let out_path = format!("{}{}", FILE_PATH, "part3.s");
+        let input = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let _ = generate_asm(&input, &out_path);
+    }
+
+    #[test]
+    fn  test_part4() {
+        let file_path = format!("{}{}", FILE_PATH, "part4.sy");
+        let out_path = format!("{}{}", FILE_PATH, "part4.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }
@@ -1730,12 +1747,12 @@ mod tests {
         ];
         // 由线性扫描器扫描之后的顺序是 a(0,10) b(5,20) f(11,60) e(20,50) c(21,30) d(22,40)
         let (allocation_map, stack_size) = allocator.allocate(mocks);
-        allocation_map.iter().for_each(|map| {
-            println!("{:?}", map);
-        });
+        // allocation_map.iter().for_each(|map| {
+        //     println!("{:?}", map);
+        // });
         let mut gen_context = GenContext::new();
         gen_context.record_alloc_vars(allocation_map, stack_size);
-        println!("{:?}",gen_context.var_locations);
+        // println!("{:?}",gen_context.var_locations);
     }
 
     #[test]
@@ -1799,7 +1816,8 @@ mod tests {
         let (stack_allocation_map, stack_size) = only_stack_alloc.allocate(mocks);
         stack_allocation_map.iter().for_each(|map| {
             println!("{:?}", map);
-        });        let mut stack_gen_context = GenContext::new();
+        });
+        let mut stack_gen_context = GenContext::new();
         stack_gen_context.record_alloc_vars(stack_allocation_map, stack_size);
 
         // 创建 LLVM Context 用于构建常量值

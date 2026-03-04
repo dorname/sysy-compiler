@@ -136,8 +136,11 @@ impl AsmBuilder {
    }
 
    /// 数据移动指令
+   /// mv rd, rs1 x\[rd\] = x\[rs1\]
+   /// 移动(Move). 伪指令(Pseudoinstruction), RV32I and RV64I.
+   /// 把寄存器 x\[rs1\]复制到 x\[rd\]中。实际被扩展为 addi rd, rs1, 0
    pub fn emit_mv(&mut self, dest: &str, src: &str) {
-    let _ = writeln!(self.buf, "  mv {}, {}", dest, src); // 数据移动
+    let _ = writeln!(self.buf, "  mv {}, {}", dest, src); 
    }
 
    /// 系统调用指令

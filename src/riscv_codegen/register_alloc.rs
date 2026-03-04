@@ -396,7 +396,7 @@ impl RegisterAllocator for LinearScan {
                     self.active_vars.insert(var.clone());
                     self.var_reg_map.insert(var.get_name().clone(),reg);
                 }else {
-                    println!("{:?}",self.regs);
+                    // println!("{:?}",self.regs);
                 }
             }
         }

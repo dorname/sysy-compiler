@@ -9,6 +9,19 @@ use std::{env, fs};
 use std::io::{stderr, stdout};
 use crate::riscv_codegen::generate_asm;
 
+use tklog::{
+    sync::Logger,LEVEL, LOG,
+    Format,MODE,
+};
+
+fn log_init() {
+    LOG.set_console(true)
+        .set_level(LEVEL::Info)
+        .set_format(Format::LevelFlag | Format::Time | Format::ShortFileName)
+        .set_cutmode_by_size("tklogsize.txt", 1<<20, 10, true)
+        .set_formatter("{level}{time} {file}:{message}\n");
+}
+
 fn main() {
     // 收集命令行参数
     let args: Vec<String> = env::args().collect();

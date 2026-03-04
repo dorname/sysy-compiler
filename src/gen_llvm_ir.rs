@@ -73,7 +73,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    pub fn scan_collect_asm(&self, asm_build_fn: fn(&IrSession,output: &str) -> Result<(), String>) -> Result<(), String> {
+    pub fn scan_collect_asm(&self, ir_output:&str,asm_build_fn: fn(&IrSession,output: &str) -> Result<(), String>) -> Result<(), String> {
         let mut pairs = match parse_file(self.input) {
             Some(pairs) => pairs,
             None => return Err("语法解析失败".to_string()),
@@ -100,6 +100,10 @@ impl<'a> Scanner<'a> {
             return Err(format!("LLVM IR验证失败: {}", e));
         }
 
+        // 输出IR
+        ir_session.module.print_to_file(ir_output)
+            .map_err(|e| format!("输出IR文件失败: {}", e))?;
+        
         // 输出asm.s
         asm_build_fn(&ir_session,self.output)?;
 
