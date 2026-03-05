@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use log::info;
 use crate::riscv_codegen::GenContext;
 use crate::riscv_codegen::register_alloc::Location::Reg;
 
@@ -130,8 +131,10 @@ pub struct LinearScan {
     var_reg_map: HashMap<String, String>,
     // 栈偏移改为i32类型，使用负数偏移（从0开始递减：0, -4, -8...），符合RISC-V栈向下增长的习惯
     stack_offset: i32,
-    // 活跃栈空间
-    stack_slots: Vec<(i32, usize)>,
+    // 空闲的栈空间
+    stack_slots: Vec<(i32,String)>,
+    // 栈和变量映射表
+    stack_map: HashMap<String,(i32,String)>,
 }
 
 impl LinearScan {
@@ -156,7 +159,13 @@ impl LinearScan {
             regs.push(format!("a{}", i));
         }
 
-        Self { regs, active_vars: BTreeSet::new(), var_reg_map: HashMap::new(), stack_offset: 0,stack_slots: Vec::new() }
+        Self { regs,
+            active_vars: BTreeSet::new(),
+            var_reg_map: HashMap::new(),
+            stack_offset: 0,
+            stack_slots: Vec::new(),
+            stack_map: HashMap::new(),
+        }
     }
 
     fn auto_sort_regs(&mut self) {
@@ -225,6 +234,7 @@ impl LinearScan {
     }
 
 
+
     /// 清理已结束的活跃变量，释放其占用的寄存器
     ///
     /// 在线性扫描寄存器分配算法中，当一个变量的生命周期结束时，
@@ -263,6 +273,11 @@ impl LinearScan {
             if let Some(reg) = self.var_reg_map.get(inactive.get_name()) {
                 self.regs.push(reg.clone());
                 self.auto_sort_regs();
+            }
+
+            // 使用inactive变量的名称来释放栈空间
+            if let Some(stack_slot) = self.stack_map.get(inactive.get_name()) {
+                self.stack_slots.push(stack_slot.clone());
             }
         }
     }
@@ -317,14 +332,18 @@ impl LinearScan {
         }
     }
 
-    /// 栈分配
+    /// 分配新的栈空间
     fn put_in_stack(&mut self,var: &InnerVar) {
-        // 使用负数偏移，符合RISC-V栈向下增长的习惯
-        self.stack_offset -= 4;
-        self.var_reg_map.insert(
-            var.get_name().clone(),
-            format!("{}(sp)", self.stack_offset),
-        );
+        if self.stack_slots.is_empty(){
+            // 当前没有闲置的栈空间
+            // 使用负数偏移，符合RISC-V栈向下增长的习惯
+            self.stack_offset -= 4;
+            self.stack_map.insert(var.get_name().clone(),(self.stack_offset,format!("{}(sp)", self.stack_offset)));
+        }else {
+            // 当前存在闲置的栈空间 直接分配
+            let slot = self.stack_slots.pop().unwrap();
+            self.stack_map.insert(var.get_name().clone(),slot.clone());
+        }
     }
 }
 
@@ -395,8 +414,6 @@ impl RegisterAllocator for LinearScan {
                 if let Some(reg) = self.pop_reg() {
                     self.active_vars.insert(var.clone());
                     self.var_reg_map.insert(var.get_name().clone(),reg);
-                }else {
-                    // println!("{:?}",self.regs);
                 }
             }
         }
@@ -410,25 +427,16 @@ impl RegisterAllocator for LinearScan {
         };
         
         // 将负数偏移转换为正偏移（从栈帧底部开始的偏移）
-        let mut temp = HashMap::new();
-        for (var, loc) in &self.var_reg_map {
-            if loc.ends_with("(sp)") {
-                let offset_str = loc.trim_end_matches("(sp)");
-                if let Ok(offset) = offset_str.parse::<i32>()
-                && offset < 0 {
-                    let positive_offset = stack_size_i32 + offset;
-                    temp.insert(var.clone(), format!("{}(sp)", positive_offset));
-                } else {
-                    temp.insert(var.clone(), loc.clone());
-                }
-            } else {
-                temp.insert(var.clone(), loc.clone());
+        for (var, (offset,_)) in &self.stack_map {
+            if *offset < 0 {
+                let positive_offset = stack_size_i32 + offset;
+                self.var_reg_map.insert(var.clone(), format!("{}(sp)", positive_offset));
             }
         }
         
         // 将i32类型的stack_size转换为usize返回
         let stack_size = stack_size_i32 as usize;
-        (temp, stack_size)
+        (self.var_reg_map.clone(), stack_size)
     }
 }
 

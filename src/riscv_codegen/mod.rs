@@ -330,8 +330,8 @@ fn build_function<'ctx>(
     // 注册全局变量到当前函数作用域
     for global in global_names {
         ctx.add_global(global.to_string());
+        info!("注册全局变量 ",global.to_string());
     }
-
     // ==========================================
     // 遍历,收集要素
     // 1、收集基本块的起始位置（基本块索引）
@@ -393,14 +393,17 @@ fn build_function<'ctx>(
 
     // 步骤3：计算活跃区间
     let inner_vars = state.compute_liveness();
+    for  inner_var in inner_vars.iter() {
+        info!("内部变量 ",inner_var.get_name());
+    }
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
     let alloc = AllocatedInnerVar::default();
     let (allocations, stack_size) = alloc.allocate(inner_vars, ctx.pure_stack_mode);
 
-    // allocations.iter().for_each(|map| {
-    //     println!("{:?}", map);
-    // });
+    allocations.iter().for_each(|map| {
+        println!("{:?}", map);
+    });
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloc_vars(allocations, stack_size);
     
