@@ -1,9 +1,6 @@
 // RISC-V 代码生成模块
 // 负责将LLVM IR翻译为RISC-V汇编代码
 
-use std::collections::{HashMap, HashSet};
-use std::process::Output;
-use tklog::{trace,debug, error, fatal, info,warn};
 use crate::riscv_codegen::register_alloc::{AllocatedInnerVar, InnerVar, Location};
 use crate::{
     gen_llvm_ir::{IrSession, Scanner},
@@ -17,13 +14,18 @@ use inkwell::{
     values::{FunctionValue, GlobalValue, InstructionValue},
 };
 use num_traits::zero;
+use std::collections::{HashMap, HashSet};
+use std::process::Output;
+use tklog::{debug, error, fatal, info, trace, warn};
 
 pub mod asm_builder;
 pub mod register_alloc;
 
 pub fn generate_asm(input: &str, output: &str) -> Result<(), String> {
     let scanner = Scanner::new(input, output);
-    let _ = scanner.scan_collect_asm("temp.ll",|ir_session, output| Ok(parse_llvm_ir(ir_session, output)));
+    let _ = scanner.scan_collect_asm("temp.ll", |ir_session, output| {
+        Ok(parse_llvm_ir(ir_session, output))
+    });
     Ok(())
 }
 
@@ -67,15 +69,15 @@ pub struct GenContext {
     stack_size: usize,                        // 总栈大小
     global_names: Vec<String>,                // 全局变量名列表
     temp_val_num: usize,
-    allocated_vals: HashSet<String>,           // alloca变量名集合
-    pure_stack_mode: bool,                   // 是否为纯栈分配模式
+    allocated_vals: HashSet<String>, // alloca变量名集合
+    pure_stack_mode: bool,           // 是否为纯栈分配模式
 }
 
 impl GenContext {
     pub fn get_allocated_vals(&self) -> &HashSet<String> {
         &self.allocated_vals
     }
-    
+
     pub fn new() -> Self {
         Self {
             var_locations: HashMap::new(),
@@ -86,15 +88,15 @@ impl GenContext {
             pure_stack_mode: false,
         }
     }
-    
+
     pub fn set_pure_stack_mode(&mut self, enabled: bool) {
         self.pure_stack_mode = enabled;
     }
-    
+
     pub fn set_allocated_vals(&mut self, allocated_vals: HashSet<String>) {
         self.allocated_vals = allocated_vals;
     }
-    
+
     /// 检查是否为alloca变量（纯栈模式下返回false）
     pub fn is_alloc(&self, name: &str) -> bool {
         if self.pure_stack_mode {
@@ -196,7 +198,7 @@ impl GenContext {
 /// 第一次遍历状态：收集指令的def/use信息
 struct FunctionState {
     instructions: Vec<(usize, String, Vec<String>)>, // (指令索引, 变量名, 使用的变量集合)
-    allocated_vals: HashSet<String>,               // 记录已经分配了存储空间的数据
+    allocated_vals: HashSet<String>,                 // 记录已经分配了存储空间的数据
     block_start_idxes: HashMap<String, usize>,       // 基本块起始位置
     loop_branch: bool,                               // 是否存在循环
     idx: usize,                                      // 当前指令索引
@@ -266,7 +268,7 @@ impl FunctionState {
         // 遍历指令集
         for (idx, val_name, uses) in self.instructions.iter() {
             // 如果名称不是临时变量或者常量，则说明是定义的变量，计算对应的活跃区间
-            if !val_name.is_empty()  {
+            if !val_name.is_empty() {
                 // 记录第一次出现的位置，entry方法是如果hash表中为空才会插入，否则不插入
                 first.entry(val_name.to_string()).or_insert(*idx);
                 // 记录最后一次出现的位置
@@ -274,7 +276,7 @@ impl FunctionState {
             }
             // 开始根据被使用的位置信息，更新活跃区间
             for use_name in uses {
-                if !use_name.is_empty(){
+                if !use_name.is_empty() {
                     first.entry(use_name.to_string()).or_insert(*idx);
                     last.insert(use_name.to_string(), *idx);
                 }
@@ -330,7 +332,7 @@ fn build_function<'ctx>(
     // 注册全局变量到当前函数作用域
     for global in global_names {
         ctx.add_global(global.to_string());
-        info!("注册全局变量 ",global.to_string());
+        info!("注册全局变量 ", global.to_string());
     }
     // ==========================================
     // 遍历,收集要素
@@ -392,9 +394,16 @@ fn build_function<'ctx>(
     }
 
     // 步骤3：计算活跃区间
-    let inner_vars = state.compute_liveness();
-    for  inner_var in inner_vars.iter() {
-        info!("内部变量 ",inner_var.get_name());
+    // 全局变量已经固定映射为 Location::Global，不应再参与寄存器/栈分配。
+    // 否则像 `%x = load i32, i32* @x` 这类与全局同名的 SSA 值会和全局地址共用名字，
+    // 导致分配器把全局变量也当成长生命周期局部值，占满寄存器并引发大量 spill。
+    let inner_vars = state
+        .compute_liveness()
+        .into_iter()
+        .filter(|var| !global_names.contains(var.get_name()))
+        .collect::<Vec<_>>();
+    for inner_var in inner_vars.iter() {
+        info!("内部变量 ", inner_var.get_name());
     }
     // 步骤4：执行寄存器分配
     // false表示使用线性扫描寄存器分配，true表示所有变量都放在栈上（Part2模式）
@@ -406,7 +415,7 @@ fn build_function<'ctx>(
     });
     // 记录变量分配好的存储位置和预计使用的栈空间
     ctx.record_alloc_vars(allocations, stack_size);
-    
+
     // 将alloca变量集合传递给GenContext，用于区分已被分配空间的变量和临时变量
     ctx.set_allocated_vals(state.get_allocated_vals().clone());
 
@@ -544,20 +553,19 @@ fn collect_uses(instruction: &InstructionValue) -> Vec<String> {
                 if !is_constant(rhs) {
                     let name = get_value_from_basic(rhs);
                     uses.push(name);
-
                 }
             }
         }
         InstructionOpcode::Load => {
             // <pointer>
             if let Some(value_operand) = instruction.get_operand(0)
-            && let Some(ptr_value) = value_operand.left() {
+                && let Some(ptr_value) = value_operand.left()
+            {
                 if !is_constant(ptr_value) {
                     let name = get_value_from_basic(ptr_value);
                     uses.push(name);
                 }
             }
-
         }
         InstructionOpcode::Br | InstructionOpcode::ZExt => {
             if let Some(value_operand) = instruction.get_operand(0)
@@ -586,7 +594,7 @@ fn get_value_name(instruction: &InstructionValue) -> String {
 }
 
 fn is_constant(value: BasicValueEnum) -> bool {
-     value.is_int_value() && value.into_int_value().is_constant_int()
+    value.is_int_value() && value.into_int_value().is_constant_int()
 }
 
 /// 第二次遍历：生成指令代码
@@ -633,7 +641,7 @@ fn generate_return_instruction(
     ctx: &mut GenContext,
 ) {
     let num_operands = instruction.get_num_operands();
-    
+
     if num_operands > 0 {
         if let Some(return_operand) = instruction.get_operand(0)
             && let Some(return_value) = return_operand.left()
@@ -644,7 +652,7 @@ fn generate_return_instruction(
             }
         }
     }
-    
+
     let stack_size = ctx.get_stack_size();
     let aligned_stack_size = if stack_size > 0 {
         ((stack_size + 15) / 16) * 16
@@ -717,13 +725,14 @@ fn generate_load_instruction(
 ) {
     let ptr_operand = instruction.get_operand(0);
     let ptr_name = if let Some(ptr_e) = ptr_operand
-    && let Some(ptr_basic) = ptr_e.left()
-    && let Ok(p) = ptr_basic.get_name().to_str(){
+        && let Some(ptr_basic) = ptr_e.left()
+        && let Ok(p) = ptr_basic.get_name().to_str()
+    {
         p.to_string()
-    }else {
+    } else {
         return;
     };
-    
+
     let result_name = get_value_name(instruction);
 
     // <pointer> 是全局变量
@@ -756,16 +765,16 @@ fn generate_load_instruction(
         match (result_loc, ptr_loc) {
             // reg <- sp
             (Some(Location::Reg(to_reg)), Some(Location::Stack(from_offset))) => {
-                asm_builder.emit_lw(to_reg,*from_offset,"sp")
-            },
+                asm_builder.emit_lw(to_reg, *from_offset, "sp")
+            }
             // sp <- sp
             (Some(Location::Stack(to_offset)), Some(Location::Stack(from_offset))) => {
                 if to_offset == from_offset {
                     return;
                 }
-                asm_builder.emit_lw("t0",*from_offset,"sp");
-                asm_builder.emit_sw("t0",*to_offset,"sp");
-            },
+                asm_builder.emit_lw("t0", *from_offset, "sp");
+                asm_builder.emit_sw("t0", *to_offset, "sp");
+            }
             // reg <- reg
             (Some(Location::Reg(to_reg)), Some(Location::Reg(from_reg))) => {
                 if to_reg == from_reg {
@@ -775,10 +784,9 @@ fn generate_load_instruction(
             }
             // sp <- reg
             (Some(Location::Stack(to_offset)), Some(Location::Reg(from_reg))) => {
-                asm_builder.emit_sw(from_reg,*to_offset,"sp");
+                asm_builder.emit_sw(from_reg, *to_offset, "sp");
             }
             _ => {}
-
         }
     }
 }
@@ -960,11 +968,11 @@ fn generate_zext_instruction(
                 if &value_reg == reg {
                     return;
                 }
-                asm_builder.emit_mv(reg,&value_reg);
-            },
+                asm_builder.emit_mv(reg, &value_reg);
+            }
             Some(Location::Stack(offset)) => {
-                asm_builder.emit_sw(&value_reg,*offset,"sp");
-            },
+                asm_builder.emit_sw(&value_reg, *offset, "sp");
+            }
             _ => {}
         }
     }
@@ -1047,98 +1055,96 @@ fn generate_cal_instruction(
     let lhs_operand = instruction.get_operand(0);
     let rhs_operand = instruction.get_operand(1);
     if let Some(lhs_e) = lhs_operand
-    && let Some(rhs_e) = rhs_operand
-    && let Some(lhs) = lhs_e.left()
-    && let Some(rhs) = rhs_e.left() {
-        let lhs_reg = get_value_from_reg(lhs,ctx,"t0",asm_builder);
-        let rhs_reg = get_value_from_reg(rhs,ctx,"t1",asm_builder);
-        info!("左侧：",lhs.to_string(),";右侧：",rhs.to_string());
+        && let Some(rhs_e) = rhs_operand
+        && let Some(lhs) = lhs_e.left()
+        && let Some(rhs) = rhs_e.left()
+    {
+        let lhs_reg = get_value_from_reg(lhs, ctx, "t0", asm_builder);
+        let rhs_reg = get_value_from_reg(rhs, ctx, "t1", asm_builder);
+        info!("左侧：", lhs.to_string(), ";右侧：", rhs.to_string());
         let result_name = get_value_name(instruction);
-        info!("结果名称",result_name);
+        info!("结果名称", result_name);
         // 获取结果存储位置
         let result_loc = ctx.get_location(&result_name);
         if let Some(result_loc) = result_loc {
-            info!("结果存储位置",result_loc.get_name());
+            info!("结果存储位置", result_loc.get_name());
             match result_loc {
                 // 存储在寄存器
                 Location::Reg(reg) => {
                     let result_reg = reg.to_string();
                     match instruction.get_opcode() {
                         InstructionOpcode::Add => {
-                            asm_builder.emit_add(&result_reg,&lhs_reg,&rhs_reg);
-                        },
+                            asm_builder.emit_add(&result_reg, &lhs_reg, &rhs_reg);
+                        }
                         InstructionOpcode::Sub => {
-                            asm_builder.emit_sub(&result_reg,&lhs_reg,&rhs_reg);
-                        },
+                            asm_builder.emit_sub(&result_reg, &lhs_reg, &rhs_reg);
+                        }
                         InstructionOpcode::Mul => {
-                            asm_builder.emit_mul(&result_reg,&lhs_reg,&rhs_reg);
-                        },
+                            asm_builder.emit_mul(&result_reg, &lhs_reg, &rhs_reg);
+                        }
                         InstructionOpcode::SDiv => {
-                            asm_builder.emit_div(&result_reg,&lhs_reg,&rhs_reg);
-                        },
+                            asm_builder.emit_div(&result_reg, &lhs_reg, &rhs_reg);
+                        }
                         InstructionOpcode::SRem => {
-                            asm_builder.emit_rem(&result_reg,&lhs_reg,&rhs_reg);
-                        },
+                            asm_builder.emit_rem(&result_reg, &lhs_reg, &rhs_reg);
+                        }
                         _ => {}
                     }
-                },
+                }
                 // 存储在栈
                 Location::Stack(sp_offset) => {
                     let result_reg = "t2";
                     match instruction.get_opcode() {
                         InstructionOpcode::Add => {
                             asm_builder.emit_add(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::Sub => {
                             asm_builder.emit_sub(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::Mul => {
                             asm_builder.emit_mul(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::SDiv => {
                             asm_builder.emit_div(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::SRem => {
                             asm_builder.emit_rem(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         _ => {}
                     }
                     asm_builder.emit_sw(result_reg, *sp_offset, "sp");
-                },
+                }
                 //存储在全局变量
                 Location::Global(name) => {
-                    info!("全局变量",name);
+                    info!("全局变量", name);
                     let result_reg = "t2";
                     let addr_reg = "t3";
                     match instruction.get_opcode() {
                         InstructionOpcode::Add => {
                             asm_builder.emit_add(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::Sub => {
                             asm_builder.emit_sub(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::Mul => {
                             asm_builder.emit_mul(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::SDiv => {
                             asm_builder.emit_div(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         InstructionOpcode::SRem => {
                             asm_builder.emit_rem(result_reg, &lhs_reg, &rhs_reg);
-                        },
+                        }
                         _ => {}
                     }
                     asm_builder.emit_la(addr_reg, &name);
                     asm_builder.emit_sw(result_reg, 0, addr_reg);
-                },
+                }
                 _ => {}
             }
         }
-    
     }
-
 }
-
 
 /// 生成store指令：把 SSA value / 常量 写入某个内存地址
 /// ```
@@ -1195,7 +1201,7 @@ fn generate_store_instruction(
         && let Some(from) = from_e.left()
         && let Some(to) = to_e.left()
     {
-        let ptr_name = if let Ok(p) = to.get_name().to_str(){
+        let ptr_name = if let Ok(p) = to.get_name().to_str() {
             p
         } else {
             return;
@@ -1208,29 +1214,27 @@ fn generate_store_instruction(
     // 如果 pointer 是全局变量的内存地址
     // 则把 value 从ssa/const 取出来
     if ctx.is_global(&ptr_name) {
-        let value = get_value_from_reg(from,ctx,"t0",asm_builder);
+        let value = get_value_from_reg(from, ctx, "t0", asm_builder);
         // 加载全局变量地址到t2寄存器
-        asm_builder.emit_la("t2",&ptr_name);
+        asm_builder.emit_la("t2", &ptr_name);
         // 将value 写入 全局变量
-        asm_builder.emit_sw(&value,0,"t2");
-        return ;
+        asm_builder.emit_sw(&value, 0, "t2");
+        return;
     }
 
-    let ptr_s = {
-        ctx.get_location(&ptr_name)
-    };
+    let ptr_s = { ctx.get_location(&ptr_name) };
 
     // 如果pointer 是局部变量的内存地址（可能指向的是栈空间也可能是寄存器）
     if let Some(ptr) = ptr_s {
         match ptr {
             Location::Reg(reg) => {
-                load_value_to_reg(from,ctx,reg,asm_builder);
-            },
+                load_value_to_reg(from, ctx, reg, asm_builder);
+            }
             Location::Stack(sp_offset) => {
-                let value_reg = get_value_from_reg(from,ctx,"t0",asm_builder);
-                asm_builder.emit_sw(&value_reg,*sp_offset,"sp")
-            },
-            _=>{},
+                let value_reg = get_value_from_reg(from, ctx, "t0", asm_builder);
+                asm_builder.emit_sw(&value_reg, *sp_offset, "sp")
+            }
+            _ => {}
         }
     }
 }
@@ -1305,92 +1309,81 @@ fn generate_icmp_instruction(
         match predicate {
             // ==
             IntPredicate::EQ => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
 
                 // 先做减法，然后与立即数0比较 sub rd rs2
-                asm_builder.emit_sub(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_sub(&result_reg, &l_reg, &r_reg);
                 // seqz(set if equal zero) 如果 t2 寄存器中的值为0 则往 result_reg 寄存器中写入1 否则 写入 0 seqz rd rs1
-                asm_builder.emit_seqz(&result_reg,"t2");
+                asm_builder.emit_seqz(&result_reg, "t2");
             }
             // !=
             IntPredicate::NE => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
 
                 // 先做减法，然后与立即数0比较
-                asm_builder.emit_sub(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_sub(&result_reg, &l_reg, &r_reg);
                 // snez (set if not equal zero) 如果 t2 寄存器中的值 不为 0 则往result_reg 寄存器中写入1 否则 写入 0 snez rd rs1
-                asm_builder.emit_snez(&result_reg,"t2");
-
+                asm_builder.emit_snez(&result_reg, "t2");
             }
             // >
             IntPredicate::SGT => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
                 // asm 支持伪指令
                 // sgt rd, rs1, rs2
-                asm_builder.emit_sgt(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_sgt(&result_reg, &l_reg, &r_reg);
             }
             // <
             IntPredicate::SLT => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
                 // slt rd, rs1, rs2
-                asm_builder.emit_slt(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_slt(&result_reg, &l_reg, &r_reg);
             }
             // >=
             IntPredicate::SLE => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
                 // 伪指令
@@ -1398,25 +1391,23 @@ fn generate_icmp_instruction(
                 // 实际：
                 // slt rd, rs2, rs1   # rd = (rs2 < rs1) ? 1 : 0
                 // xori rd, rd, 1     # rd = rd ^ 1  => 取反，得到 (rs1 <= rs2)
-                asm_builder.emit_sle(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_sle(&result_reg, &l_reg, &r_reg);
             }
             // <=
             IntPredicate::SGE => {
-                let l_reg = get_value_from_reg(lft_v,ctx,"t0",asm_builder);
-                let r_reg = get_value_from_reg(rgt_v,ctx,"t1",asm_builder);
+                let l_reg = get_value_from_reg(lft_v, ctx, "t0", asm_builder);
+                let r_reg = get_value_from_reg(rgt_v, ctx, "t1", asm_builder);
                 let result_reg = if let Some(res_location) = ctx.get_location(&result_name) {
                     match res_location {
-                        Location::Reg(reg) => {
-                            reg.to_string()
-                        },
-                        _ => "t2".to_string()
+                        Location::Reg(reg) => reg.to_string(),
+                        _ => "t2".to_string(),
                     }
-                }else {
+                } else {
                     "t2".to_string()
                 };
                 // 伪指令
                 // sgt rd, rs1, rs2
-                asm_builder.emit_sge(&result_reg,&l_reg,&r_reg);
+                asm_builder.emit_sge(&result_reg, &l_reg, &r_reg);
             }
             _ => {}
         }
@@ -1451,11 +1442,11 @@ fn generate_icmp_instruction(
 /// - 正常情况下，LLVM IR 中的变量名都是有效的 UTF-8 字符串，返回 `"x0"` 的情况极少发生
 /// - 返回 `"x0"` 是一种防御性处理，用于避免程序崩溃
 /// - 该函数主要用于获取变量名，以便通过 `GenContext::get_location()` 查找变量的存储位置
-fn get_value_from_basic(input:BasicValueEnum) -> String {
+fn get_value_from_basic(input: BasicValueEnum) -> String {
     let cstr = input.get_name();
     let name = if let Ok(name_str) = cstr.to_str() {
         name_str
-    }else {
+    } else {
         // 防御性处理：实际上走到这个分支的可能很小
         return "x0".to_string();
     };
@@ -1525,34 +1516,40 @@ fn get_value_from_basic(input:BasicValueEnum) -> String {
 /// // 生成: li t0, 42
 /// // 返回 "t0"
 /// ```
-fn get_value_from_reg(input: BasicValueEnum, ctx: &GenContext,reg_name:&str,asm_builder: &mut AsmBuilder) -> String {
+fn get_value_from_reg(
+    input: BasicValueEnum,
+    ctx: &GenContext,
+    reg_name: &str,
+    asm_builder: &mut AsmBuilder,
+) -> String {
     // 判断是否是立即数,如果是0则返回zero寄存器,不是则分配到入参的寄存器中
     if is_constant(input)
-        && let Some(val) = input.into_int_value().get_zero_extended_constant(){
+        && let Some(val) = input.into_int_value().get_zero_extended_constant()
+    {
         if val == 0 {
             return "x0".to_string();
         }
         // 加载立即数 load immediate
         // li {reg_name}, {value}
-        asm_builder.emit_li(reg_name,val as i32);
+        asm_builder.emit_li(reg_name, val as i32);
         return reg_name.to_string();
     }
 
     // 如果不是立即数,读取操作数名称，并获取其存储位置
-    let val_name =  get_value_from_basic(input);
+    let val_name = get_value_from_basic(input);
     if let Some(location) = ctx.get_location(&val_name) {
         match location {
             // 如果是寄存器，直接返回寄存器名称
             Location::Reg(reg) => {
                 return reg.to_string();
-            },
+            }
             // 如果是栈，则加载栈值到寄存器
             Location::Stack(sp_offset) => {
                 // 加载栈值 load word
                 // lw {reg_name}, {offset}(sp)
                 asm_builder.emit_lw(reg_name, *sp_offset, "sp");
                 return reg_name.to_string();
-            },
+            }
             // 如果是全局变量，则加载全局变量值到寄存器
             Location::Global(name) => {
                 // 加载全局变量 load address
@@ -1571,7 +1568,6 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &GenContext,reg_name:&str,asm_
     // 返回寄存器名称
     reg_name.to_string()
 }
-
 
 /// 将值加载到指定的目标寄存器中
 ///
@@ -1633,7 +1629,12 @@ fn get_value_from_reg(input: BasicValueEnum, ctx: &GenContext,reg_name:&str,asm_
 /// load_value_to_reg(const_42, ctx, "t0", asm_builder);
 /// // 生成: li t0, 42
 /// ```
-fn load_value_to_reg(input: BasicValueEnum, ctx: &GenContext, reg_name: &str, asm_builder: &mut AsmBuilder) {
+fn load_value_to_reg(
+    input: BasicValueEnum,
+    ctx: &GenContext,
+    reg_name: &str,
+    asm_builder: &mut AsmBuilder,
+) {
     //  如果 操作数是 常量 则为立即数
     if is_constant(input)
         && let Some(val) = input.into_int_value().get_zero_extended_constant()
@@ -1660,13 +1661,13 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &GenContext, reg_name: &str, as
                     // mv {reg_name}, {reg}
                     asm_builder.emit_mv(reg_name, reg);
                 }
-            },
+            }
             // 如果是栈，则加载栈值到目标寄存器
             Location::Stack(sp_offset) => {
                 // 加载栈值 load word
                 // lw {reg_name}, {offset}(sp)
                 asm_builder.emit_lw(reg_name, *sp_offset, "sp");
-            },
+            }
             // 如果是全局变量，则加载全局变量值到目标寄存器
             Location::Global(label) => {
                 // 加载全局变量 load address
@@ -1685,12 +1686,12 @@ fn load_value_to_reg(input: BasicValueEnum, ctx: &GenContext, reg_name: &str, as
 }
 #[cfg(test)]
 mod tests {
-    use std::arch::asm;
-    use inkwell::AddressSpace;
-    use inkwell::values::BasicValue;
+    use super::*;
     use crate::log_init;
     use crate::riscv_codegen::register_alloc::{LinearScan, NoAlloc, RegisterAllocator};
-    use super::*;
+    use inkwell::AddressSpace;
+    use inkwell::values::BasicValue;
+    use std::arch::asm;
 
     const FILE_PATH: &str = "tests/lab6/";
 
@@ -1703,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn  test_part2() {
+    fn test_part2() {
         let file_path = format!("{}{}", FILE_PATH, "part2.sy");
         let out_path = format!("{}{}", FILE_PATH, "part2.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
@@ -1711,7 +1712,7 @@ mod tests {
     }
 
     #[test]
-    fn  test_part3() {
+    fn test_part3() {
         log_init();
         let file_path = format!("{}{}", FILE_PATH, "part3.sy");
         let out_path = format!("{}{}", FILE_PATH, "part3.s");
@@ -1720,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn  test_part4() {
+    fn test_part4() {
         let file_path = format!("{}{}", FILE_PATH, "part4.sy");
         let out_path = format!("{}{}", FILE_PATH, "part4.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
@@ -1732,15 +1733,14 @@ mod tests {
         let file_path = format!("{}{}", FILE_PATH, "part4.sy");
         let out_path = format!("{}{}", FILE_PATH, "part4.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
-        let scanner = Scanner::new(&input,&out_path);
+        let scanner = Scanner::new(&input, &out_path);
         let _ = scanner.scan_collect();
     }
 
-
     #[test]
-    fn test_record_loc(){
+    fn test_record_loc() {
         let mut allocator = LinearScan::new();
-        let mocks:Vec<InnerVar> = vec![
+        let mocks: Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
             InnerVar::new("c".to_string(), 21, 30),
@@ -1759,11 +1759,11 @@ mod tests {
     }
 
     #[test]
-    fn test_record_loc1(){
+    fn test_record_loc1() {
         let mut allocator = NoAlloc::default();
         // 生命周期没有重合的栈空间可以完全复用
         // 由于hashmap的无序性分配的栈偏移也具有随机性，但栈空间基本是定的
-        let mocks:Vec<InnerVar> = vec![
+        let mocks: Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
             InnerVar::new("c".to_string(), 21, 30),
@@ -1784,16 +1784,16 @@ mod tests {
         });
         let mut gen_context = GenContext::new();
         gen_context.record_alloc_vars(allocation_map, stack_size);
-        println!("{:?}",gen_context.var_locations);
+        println!("{:?}", gen_context.var_locations);
     }
 
     #[test]
-    fn test_get_val_from_reg(){
+    fn test_get_val_from_reg() {
         use inkwell::context::Context;
-        
+
         let mut allocator = LinearScan::new();
         let mut only_stack_alloc = NoAlloc::default();
-        let mocks:Vec<InnerVar> = vec![
+        let mocks: Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
             InnerVar::new("c".to_string(), 21, 30),
@@ -1841,38 +1841,58 @@ mod tests {
         // 测试立即数1 - 应该生成 li t0, 1 并返回 "t0"
         let const_one = i32_type.const_int(1, false).into();
         let _ = get_value_from_reg(const_one, &mut gen_context, "t0", &mut asm_builder);
-        
+
         // 测试全局变量 - 需要先添加全局变量
         let module = context.create_module("test");
-        let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
+        let global = module.add_global(i32_type, Some(AddressSpace::from(1u16)), "global_var");
         gen_context.add_global("global_var".to_string());
-        let _ = get_value_from_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
+        let _ = get_value_from_reg(
+            global.as_basic_value_enum(),
+            &mut gen_context,
+            "t1",
+            &mut asm_builder,
+        );
 
         // 测试栈变量 - 从分配结果中找到栈变量
         let stack_builder = stack_ctx.create_builder();
         let stack_module = stack_ctx.create_module("stack_test");
-        let void_type = stack_ctx.void_type().fn_type(&[],false);
+        let void_type = stack_ctx.void_type().fn_type(&[], false);
         let func = stack_module.add_function("test_fn", void_type, None);
         let entry = stack_ctx.append_basic_block(func, "entry");
         stack_builder.position_at_end(entry);
-        if let Ok(stack_test) =  stack_builder.build_alloca(i32_type_s,"f"){
-            let _ = get_value_from_reg(stack_test.as_basic_value_enum(),&mut stack_gen_context,"t1",&mut asm_builder);
+        if let Ok(stack_test) = stack_builder.build_alloca(i32_type_s, "f") {
+            let _ = get_value_from_reg(
+                stack_test.as_basic_value_enum(),
+                &mut stack_gen_context,
+                "t1",
+                &mut asm_builder,
+            );
         }
 
         // 测试寄存器变量 - 从分配结果中找到寄存器变量
         let builder = context.create_builder();
-        let void_type = context.void_type().fn_type(&[],false);
+        let void_type = context.void_type().fn_type(&[], false);
         let func = module.add_function("test_fn", void_type, None);
         let entry = context.append_basic_block(func, "entry");
         builder.position_at_end(entry);
-        if let Ok(local_var_test) =  builder.build_alloca(i32_type,"f"){
-            let var_reg = get_value_from_reg(local_var_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        if let Ok(local_var_test) = builder.build_alloca(i32_type, "f") {
+            let var_reg = get_value_from_reg(
+                local_var_test.as_basic_value_enum(),
+                &mut gen_context,
+                "t1",
+                &mut asm_builder,
+            );
             // 线性扫描算法给f分配的的t4寄存器
             assert_eq!(var_reg, "t4");
         }
         // 测试未知变量 - 验证未知变量不在上下文中
-        if let Ok(unknown_test) =  builder.build_alloca(i32_type,"fb"){
-            let var_reg = get_value_from_reg(unknown_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        if let Ok(unknown_test) = builder.build_alloca(i32_type, "fb") {
+            let var_reg = get_value_from_reg(
+                unknown_test.as_basic_value_enum(),
+                &mut gen_context,
+                "t1",
+                &mut asm_builder,
+            );
             // fb 不存在 所以返回t1
             assert_eq!(var_reg, "t1");
         }
@@ -1881,27 +1901,42 @@ mod tests {
         println!("\n生成的汇编代码:\n{}", asm_code);
         // 验证汇编代码包含预期的指令
         // 验证立即数1 li t0 1
-        assert!(asm_code.contains("li t0, 1"), "汇编代码应该包含 li t0, 1 指令");
+        assert!(
+            asm_code.contains("li t0, 1"),
+            "汇编代码应该包含 li t0, 1 指令"
+        );
         // 验证全局变量 la t1 global_var lw t1 0(t1)
-        assert!(asm_code.contains("la t1, global_var"), "汇编代码应该包含 la t1 global_var 指令");
-        assert!(asm_code.contains("lw t1, 0(t1)"), "汇编代码应该包含 lw t1 0(t1) 指令");
+        assert!(
+            asm_code.contains("la t1, global_var"),
+            "汇编代码应该包含 la t1 global_var 指令"
+        );
+        assert!(
+            asm_code.contains("lw t1, 0(t1)"),
+            "汇编代码应该包含 lw t1 0(t1) 指令"
+        );
 
         // 验证从栈中取值到寄存器 lw t1, 8(sp)
-        assert!(asm_code.contains("lw t1, 8(sp)"), "汇编代码应该包含 lw t1, 8(sp) 指令");
+        assert!(
+            asm_code.contains("lw t1, 8(sp)"),
+            "汇编代码应该包含 lw t1, 8(sp) 指令"
+        );
 
         // 验证未知变量存储寄存器 li t1, 0
-        assert!(asm_code.contains("li t1, 0"),"汇编代码应该包含 lw t1, 0 指令");
+        assert!(
+            asm_code.contains("li t1, 0"),
+            "汇编代码应该包含 lw t1, 0 指令"
+        );
         println!("\n所有测试通过！");
     }
 
     #[test]
-    fn test_load_val_to_reg(){
+    fn test_load_val_to_reg() {
         use inkwell::context::Context;
 
         let mut allocator = LinearScan::new();
         let mut only_stack_alloc = NoAlloc::default();
 
-        let mocks:Vec<InnerVar> = vec![
+        let mocks: Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
             InnerVar::new("b".to_string(), 5, 20),
             InnerVar::new("c".to_string(), 21, 30),
@@ -1942,67 +1977,92 @@ mod tests {
         let stack_ctx = Context::create();
         let i32_type_s = context.i32_type();
 
-
         // 测试立即数0 - 打印 mv t0, x0
         let const_zero = i32_type.const_int(0, false).into();
         load_value_to_reg(const_zero, &mut gen_context, "t0", &mut asm_builder);
-
 
         // 测试立即数10 - 会多打印 li t0, 10
         let ten = i32_type.const_int(10, false).into();
         load_value_to_reg(ten, &mut gen_context, "t0", &mut asm_builder);
 
-
         // 测试全局变量 - 需要先添加全局变量
         let module = context.create_module("test");
-        let global = module.add_global(i32_type,Some(AddressSpace::from(1u16)),"global_var");
+        let global = module.add_global(i32_type, Some(AddressSpace::from(1u16)), "global_var");
         gen_context.add_global("global_var".to_string());
-        load_value_to_reg(global.as_basic_value_enum(), &mut gen_context, "t1", &mut asm_builder);
+        load_value_to_reg(
+            global.as_basic_value_enum(),
+            &mut gen_context,
+            "t1",
+            &mut asm_builder,
+        );
 
         // 测试栈变量 - 从分配结果中找到栈变量
         let stack_builder = stack_ctx.create_builder();
         let stack_module = stack_ctx.create_module("stack_test");
-        let void_type = stack_ctx.void_type().fn_type(&[],false);
+        let void_type = stack_ctx.void_type().fn_type(&[], false);
         let func = stack_module.add_function("test_fn", void_type, None);
         let entry = stack_ctx.append_basic_block(func, "entry");
         stack_builder.position_at_end(entry);
-        if let Ok(stack_test) =  stack_builder.build_alloca(i32_type_s,"f"){
-             load_value_to_reg(stack_test.as_basic_value_enum(),&mut stack_gen_context,"t1",&mut asm_builder);
+        if let Ok(stack_test) = stack_builder.build_alloca(i32_type_s, "f") {
+            load_value_to_reg(
+                stack_test.as_basic_value_enum(),
+                &mut stack_gen_context,
+                "t1",
+                &mut asm_builder,
+            );
         }
 
         // 测试寄存器变量 - 从分配结果中找到寄存器变量
         let builder = context.create_builder();
-        let void_type = context.void_type().fn_type(&[],false);
+        let void_type = context.void_type().fn_type(&[], false);
         let func = module.add_function("test_fn", void_type, None);
         let entry = context.append_basic_block(func, "entry");
         builder.position_at_end(entry);
-        if let Ok(local_var_test) =  builder.build_alloca(i32_type,"f"){
-            load_value_to_reg(local_var_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        if let Ok(local_var_test) = builder.build_alloca(i32_type, "f") {
+            load_value_to_reg(
+                local_var_test.as_basic_value_enum(),
+                &mut gen_context,
+                "t1",
+                &mut asm_builder,
+            );
         }
 
         // 测试未知变量 - 验证未知变量不在上下文中
-        if let Ok(unknown_test) =  builder.build_alloca(i32_type,"fb"){
-            load_value_to_reg(unknown_test.as_basic_value_enum(),&mut gen_context,"t1",&mut asm_builder);
+        if let Ok(unknown_test) = builder.build_alloca(i32_type, "fb") {
+            load_value_to_reg(
+                unknown_test.as_basic_value_enum(),
+                &mut gen_context,
+                "t1",
+                &mut asm_builder,
+            );
         }
 
         let asm_code = asm_builder.emit();
         println!("\n生成的汇编代码:\n{}", asm_code);
         // 验证加载立即数0
-        assert!(asm_code.contains("mv t0, x0"),"汇编需要包含 mv t0, x0指令");
+        assert!(asm_code.contains("mv t0, x0"), "汇编需要包含 mv t0, x0指令");
         // 验证立即数10
-        assert!(asm_code.contains("li t0, 10"),"汇编需要包含 li t0, 10指令");
+        assert!(asm_code.contains("li t0, 10"), "汇编需要包含 li t0, 10指令");
         // 验证全局变量
-        assert!(asm_code.contains("la t1, global_var"),"汇编需要包含 la t1, global_var指令");
-        assert!(asm_code.contains("lw t1, 0(t1)"),"汇编需要包含 lw t1, 0(t1)指令");
+        assert!(
+            asm_code.contains("la t1, global_var"),
+            "汇编需要包含 la t1, global_var指令"
+        );
+        assert!(
+            asm_code.contains("lw t1, 0(t1)"),
+            "汇编需要包含 lw t1, 0(t1)指令"
+        );
 
         // 验证把值从栈加载到寄存器
-        assert!(asm_code.contains("lw t1, 8(sp)"),"汇编需要包含 lw t1, 8(sp)指令");
+        assert!(
+            asm_code.contains("lw t1, 8(sp)"),
+            "汇编需要包含 lw t1, 8(sp)指令"
+        );
 
         // 验证把值从寄存器加载到另一个寄存器
-        assert!(asm_code.contains("mv t1, t4"),"汇编需要包含 mv t1, t4指令");
+        assert!(asm_code.contains("mv t1, t4"), "汇编需要包含 mv t1, t4指令");
 
         // 验证未知变量加载到另一个寄存器
-        assert!(asm_code.contains("mv t1, x0"),"汇编需要包含 mv t1, x0指令");
-
+        assert!(asm_code.contains("mv t1, x0"), "汇编需要包含 mv t1, x0指令");
     }
 }

@@ -5,20 +5,17 @@ mod gen_llvm_ir;
 mod riscv_codegen;
 
 use crate::gen_llvm_ir::*;
-use std::{env, fs};
-use std::io::{stderr, stdout};
 use crate::riscv_codegen::generate_asm;
+use std::io::{stderr, stdout};
+use std::{env, fs};
 
-use tklog::{
-    sync::Logger,LEVEL, LOG,
-    Format,MODE,
-};
+use tklog::{Format, LEVEL, LOG, MODE, sync::Logger};
 
 fn log_init() {
     LOG.set_console(true)
         .set_level(LEVEL::Info)
         .set_format(Format::LevelFlag | Format::Time | Format::ShortFileName)
-        .set_cutmode_by_size("tklogsize.txt", 1<<20, 10, true)
+        .set_cutmode_by_size("tklogsize.txt", 1 << 20, 10, true)
         .set_formatter("{level}{time} {file}:{message}\n");
 }
 
@@ -28,7 +25,7 @@ fn main() {
 
     // 检查是否提供了文件名
     if args.len() < 3 {
-        eprintln!("Usage: {} <filename>,{}<output>", args[0],args[1]);
+        eprintln!("Usage: {} <filename>,{}<output>", args[0], args[1]);
         std::process::exit(1);
     }
 
