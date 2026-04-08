@@ -871,11 +871,12 @@ fn generate_br_instruction(
         // 条件分支
         3 => {
             if let Some(cond_operand) = instruction.get_operand(0)
-                && let Some(true_operand) = instruction.get_operand(1)
-                && let Some(false_operand) = instruction.get_operand(2)
+                // Inkwell 在这里的 block operands 顺序是 false、true。
+                && let Some(false_operand) = instruction.get_operand(1)
+                && let Some(true_operand) = instruction.get_operand(2)
                 && let Some(cond) = cond_operand.left()
-                && let Some(true_target) = true_operand.right()
                 && let Some(false_target) = false_operand.right()
+                && let Some(true_target) = true_operand.right()
                 && let Ok(true_label) = true_target.get_name().to_str()
                 && let Ok(false_label) = false_target.get_name().to_str()
             {
@@ -1322,8 +1323,8 @@ fn generate_icmp_instruction(
 
                 // 先做减法，然后与立即数0比较 sub rd rs2
                 asm_builder.emit_sub(&result_reg, &l_reg, &r_reg);
-                // seqz(set if equal zero) 如果 t2 寄存器中的值为0 则往 result_reg 寄存器中写入1 否则 写入 0 seqz rd rs1
-                asm_builder.emit_seqz(&result_reg, "t2");
+                // seqz(set if equal zero) 基于刚写入 result_reg 的比较结果继续归一化。
+                asm_builder.emit_seqz(&result_reg, &result_reg);
             }
             // !=
             IntPredicate::NE => {
@@ -1340,8 +1341,8 @@ fn generate_icmp_instruction(
 
                 // 先做减法，然后与立即数0比较
                 asm_builder.emit_sub(&result_reg, &l_reg, &r_reg);
-                // snez (set if not equal zero) 如果 t2 寄存器中的值 不为 0 则往result_reg 寄存器中写入1 否则 写入 0 snez rd rs1
-                asm_builder.emit_snez(&result_reg, "t2");
+                // snez(set if not equal zero) 也应基于 result_reg 自身的值完成归一化。
+                asm_builder.emit_snez(&result_reg, &result_reg);
             }
             // >
             IntPredicate::SGT => {
