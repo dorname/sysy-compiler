@@ -1,0 +1,13 @@
+// 测试嵌套if-else
+int main() {
+    int a = 5;
+    if (a > 3) {
+        if (a < 10) {
+            return 1;
+        } else {
+            return 2;
+        }
+    } else {
+        return 3;
+    }
+}

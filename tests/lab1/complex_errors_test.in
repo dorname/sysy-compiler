@@ -1,0 +1,5 @@
+int x = 1;
+int y = @;
+int z = 2;
+int w = #;
+int a = $;

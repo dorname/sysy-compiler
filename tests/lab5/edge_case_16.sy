@@ -1,0 +1,16 @@
+// 测试复杂的函数调用链和嵌套
+int f1(int x) {
+    return x + 1;
+}
+
+int f2(int x) {
+    return f1(x) * 2;
+}
+
+int f3(int x) {
+    return f2(x) - f1(x);
+}
+
+int main() {
+    return f3(5);
+}

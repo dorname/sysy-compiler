@@ -1,0 +1,4 @@
+Error type 8 at Line 24: Function is not applicable for arguments -> func_no_params
+Error type 8 at Line 27: Function is not applicable for arguments -> func_one_param
+Error type 8 at Line 30: Function is not applicable for arguments -> func_two_params
+Error type 8 at Line 33: Function is not applicable for arguments -> func_array_param

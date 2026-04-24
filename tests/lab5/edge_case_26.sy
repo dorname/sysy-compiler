@@ -1,0 +1,18 @@
+// 测试复杂的函数调用和参数传递
+int add(int a, int b) {
+    return a + b;
+}
+
+int multiply(int a, int b) {
+    return a * b;
+}
+
+int complex_calc(int x, int y, int z) {
+    int temp1 = add(x, y);
+    int temp2 = multiply(temp1, z);
+    return add(temp2, x);
+}
+
+int main() {
+    return complex_calc(2, 3, 4);
+}

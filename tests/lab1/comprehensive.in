@@ -1,0 +1,9 @@
+int main() {
+    const int x = 123;
+    if (x == 0x1a) {
+        return x + 077;
+    }
+    while (x != 0) {
+        x = x - 1;
+    }
+}

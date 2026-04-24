@@ -1,0 +1,19 @@
+// 测试复杂的while循环嵌套和变量作用域
+int main() {
+    int outer = 0;
+    int total = 0;
+    
+    while (outer < 3) {
+        int inner = 0;
+        while (inner < 2) {
+            if (outer + inner > 2) {
+                total = total + outer * inner;
+            } else {
+                total = total + 1;
+            }
+            inner = inner + 1;
+        }
+        outer = outer + 1;
+    }
+    return total;
+}

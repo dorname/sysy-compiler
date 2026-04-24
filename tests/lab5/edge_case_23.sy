@@ -1,0 +1,14 @@
+// 测试void函数和int函数的混合调用
+void print_num(int x) {
+    return;
+}
+
+int get_value() {
+    return 42;
+}
+
+int main() {
+    int val = get_value();
+    print_num(val);
+    return val;
+}

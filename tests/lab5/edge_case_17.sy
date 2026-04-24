@@ -1,0 +1,24 @@
+// 测试深层嵌套的if-else
+int main() {
+    int a = 10;
+    int b = 5;
+    int c = 3;
+    
+    if (a > b) {
+        if (b > c) {
+            if (a > c) {
+                return 1;
+            } else {
+                return 2;
+            }
+        } else {
+            return 3;
+        }
+    } else {
+        if (b > c) {
+            return 4;
+        } else {
+            return 5;
+        }
+    }
+}

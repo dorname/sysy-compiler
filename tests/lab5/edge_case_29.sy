@@ -1,0 +1,28 @@
+// 测试复杂的嵌套if-else和函数调用
+int get_max(int a, int b) {
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+int main() {
+    int x = 5;
+    int y = 8;
+    int z = 3;
+    
+    if (x > y) {
+        if (y > z) {
+            return get_max(x, z);
+        } else {
+            return get_max(x, y);
+        }
+    } else {
+        if (x > z) {
+            return get_max(y, z);
+        } else {
+            return get_max(y, x);
+        }
+    }
+}

@@ -1,0 +1,23 @@
+// Error type 4
+
+int i1(){
+}
+int i1(){
+}
+
+int i2(){
+}
+int i2(int ignore0){
+}
+
+int i3(int ignore1, int ignore2){
+}
+int i3(int ignore3){
+}
+
+
+int main(){
+    int a = i1();
+    int b = i2();
+    int c = i3(5, 5);
+}
