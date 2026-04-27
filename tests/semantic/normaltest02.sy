@@ -1,0 +1,24 @@
+// Error type 2
+
+int func1(){}
+
+int func2(){
+
+}
+int func3(int t1, int t2, int t3){
+
+}
+
+int main() {
+    func1();
+    func2();
+    func3(1, 1, 1);
+    func4();
+    func5();
+    func6(1, 1, 1);
+}
+
+int recursive(int r) {
+    if(r > 0) recursive(r-1);
+}
+

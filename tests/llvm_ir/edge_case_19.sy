@@ -1,0 +1,8 @@
+// 测试复杂的表达式和运算符优先级
+int main() {
+    int a = 2;
+    int b = 3;
+    int c = 4;
+    
+    return a + b * c - (a + b) * c + a * (b + c) - a / b + c % a;
+}

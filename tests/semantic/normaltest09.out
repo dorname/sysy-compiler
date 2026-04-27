@@ -1,0 +1,5 @@
+Error type 9 at Line 14: Not an array -> local_var
+Error type 9 at Line 17: Not an array -> global_var
+Error type 9 at Line 20: Not an array -> another_var
+Error type 9 at Line 23: Not an array -> func_return_int
+Error type 9 at Line 26: Not an array -> local_var

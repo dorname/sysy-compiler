@@ -1,0 +1,17 @@
+// 测试复杂的逻辑表达式
+int main() {
+    int a = 5;
+    int b = 3;
+    int c = 7;
+    int d = 2;
+    
+    if ((a > b && b < c) || (c > d && d < a)) {
+        if (a != b && b != c && c != d) {
+            return 1;
+        } else {
+            return 2;
+        }
+    } else {
+        return 3;
+    }
+}

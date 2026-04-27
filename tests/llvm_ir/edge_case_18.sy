@@ -1,0 +1,20 @@
+// 测试复杂的while循环嵌套
+int main() {
+    int i = 0;
+    int j = 0;
+    int sum = 0;
+    
+    while (i < 3) {
+        j = 0;
+        while (j < 2) {
+            if (i + j > 2) {
+                sum = sum + i * j;
+            } else {
+                sum = sum + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return sum;
+}

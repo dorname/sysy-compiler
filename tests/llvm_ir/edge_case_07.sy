@@ -1,0 +1,10 @@
+// 测试函数调用和参数传递
+int add(int a, int b) {
+    return a + b;
+}
+
+int main() {
+    int x = 3;
+    int y = 4;
+    return add(x, y);
+}
