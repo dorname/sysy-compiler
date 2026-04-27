@@ -1,0 +1,204 @@
+Plus = { "+" }
+
+Minus = { "-" }
+
+Mul = { "*" }
+
+Div = { "/" }
+
+Mod = { "%" }
+
+Assign = { "=" }
+
+Semicolon = { ";" }
+
+Equal = { "==" }
+
+NotEqual = { "!=" }
+
+Less = { "<" }
+
+Greater = { ">" }
+
+LessEqual = { "<=" }
+
+GreaterEqual = { ">=" }
+
+Not = { "!" }
+
+And = { "&&" }
+
+Or = { "||" }
+
+OpenParen = {
+    "("
+}
+CloseParen = {
+    ")"
+}
+
+OpenBrace = {
+    "{"
+}
+CloseBrace = {
+    "}"
+}
+
+OpenBracket = { "[" }
+CloseBracket = { "]" }
+
+Comma = { "," }
+
+// ===== SysY grammar for pest =====
+// 顶层入口
+File        = { SOI ~ CompUnit ~ EOI }
+CompUnit    = { ( Decl | FuncDef | ErrorStmt )+ }
+
+// ---------- 声明 ----------
+// |---- 常量声明
+// |---- 变量声明
+Decl        = { ConstDecl | VarDecl }
+
+// ---------- 常量声明 ----------
+// const int a = 1, b[2] = {1, 2};
+ConstDecl   = { Const ~ BType ~ ConstDef ~ ( Comma ~ ConstDef )* ~ Semicolon }
+BType       = { Int }
+
+// 形如 a=1 或 b[2][3]={{1,2,3},{4,5,6}}
+ConstDef    = { Ident ~ ArrayDims? ~ Assign ~ ConstInitVal }
+
+// [5],用于数组形状的定义
+ArrayDims   = { (OpenBracket ~ ConstExp ~ CloseBracket)+ }
+
+// 形如：1、{{1,2,3},{4,5,6}}
+ConstInitVal= {  ConstExp  | OpenBrace ~ ( ConstInitVal ~ ( Comma ~ ConstInitVal )* )? ~ CloseBrace }
+
+// ---------- 变量声明 ----------
+// int a, b[2];
+VarDecl     = { BType ~ VarDef ~ ( Comma ~ VarDef )* ~ Semicolon }
+
+// 形如 a 或 b[2][3] 或 a=1 或 b[2]= {1,2}
+VarDef      = { Ident ~ ArrayDims? ~ ( Assign ~ InitVal )? }
+
+// 形如：1、{{1,2,3},{4,5,6}}、a+b(a、b为上下已经定义的变量)
+InitVal     = { Exp | OpenBrace ~ ( InitVal ~ ( Comma ~ InitVal )* )? ~ CloseBrace }
+
+// ---------- 函数 ----------
+FuncDef     = { FuncType ~ FuncName ~ OpenParen ~ FuncFParams? ~ CloseParen ~ Block }
+
+FuncName = { Ident }
+
+FuncType    = { Void | Int }
+
+FuncFParams = { FuncFParam ~ ( Comma ~ FuncFParam )* }
+// 形参为数组时：第一维省略长度，其余维度需给出常量表达式
+FuncFParam  = { BType ~ FuncFParamName ~ ( NonIntArr ~ IntArr* )? }
+
+FuncFParamName = { Ident }
+
+// 无形状数组入参
+NonIntArr = { OpenBracket ~ CloseBracket }
+
+// 有形状数组入参
+IntArr = { OpenBracket ~ Exp ~ CloseBracket }
+
+// ---------- 语句块 ----------
+Block       = { OpenBrace ~ ( BlockItem | ErrorStmt )* ~ CloseBrace }
+BlockItem   = { Decl | Stmt }
+
+Stmt        = {
+      AssignStmt                    // 赋值
+    | ExpStmt                              // 表达式语句（可为空）
+    | Block                                      // 语句块
+    | IfStmt // 条件语句
+    | WhileStmt // 循环语句
+    | BreakStmt // 跳出循环
+    | ContinueStmt // 继续下一轮循环
+    | ReturnStmt // 返回语句（可无返回值）
+}
+
+
+
+AssignStmt = { LVal ~ Assign ~ Exp ~ Semicolon  }
+
+ExpStmt = { Exp? ~ Semicolon }
+
+IfStmt = {
+    If ~ OpenParen ~ Cond ~ CloseParen ~ Stmt ~ ( Else ~ Stmt )?
+}
+
+WhileStmt = {
+    While ~ OpenParen ~ Cond ~ CloseParen ~ Stmt
+}
+
+BreakStmt = { Break ~ Semicolon }
+
+ContinueStmt = { Continue ~ Semicolon }
+
+ReturnStmt = { Return ~ Exp? ~ Semicolon }
+
+
+// ---------- 表达式 ----------
+Exp         = { AddExp }                         // SysY 的表达式是 int
+Cond        = { LOrExp }
+
+LVal        = { LVarName ~ (OpenBracket ~ Exp ~ CloseBracket)* }
+
+LVarName    = { Ident }
+
+PrimaryExp  = { OpenParen ~ Exp ~ CloseParen | LVal | Number }
+
+Number      = { IntConst }
+
+UnaryOp     = { Plus | Minus | Not }
+
+CallExp     = { CallName ~ OpenParen ~ FuncRParams? ~ CloseParen }      // 实参可选
+
+CallName    = { Ident }
+
+FuncRParams = { Exp ~ ( Comma ~ Exp )* }                  // 至少 1 个
+
+UnaryExp    = { CallExp | PrimaryExp | UnaryOpExp }
+
+UnaryOpExp  = { UnaryOp ~ UnaryExp }
+
+MulExp      = { UnaryExp ~ ( ( Mul | Div | Mod ) ~ UnaryExp )* }
+AddExp      = { MulExp   ~ ( ( Plus | Minus )     ~ MulExp   )* }
+RelExp      = { AddExp   ~ ( ( LessEqual | GreaterEqual | Less | Greater ) ~ AddExp )* }
+EqExp       = { RelExp   ~ ( ( Equal | NotEqual ) ~ RelExp )* }
+LAndExp     = { EqExp    ~ ( And ~ EqExp )* }
+LOrExp      = { LAndExp  ~ ( Or ~ LAndExp )* }
+
+ConstExp    = { AddExp }                         // 需在语义阶段保证常量可求值
+
+// ---------- 词法 ----------
+Ident       = @{ !KEYWORD ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// 整型常量：十进制 / 八进制 / 十六进制
+IntConst    = _{ HexConst | OctConst | DecConst }
+HexConst    = @{ ("0x" | "0X") ~ ASCII_HEX_DIGIT+ }
+OctConst    = @{ "0" ~ ASCII_OCT_DIGIT* }       // "0" 也是八进制零
+DecConst    = @{ '1'..'9' ~ ASCII_DIGIT* }
+
+LINE_COMMENT  = _{ "//" ~ (!NEWLINE ~ ANY)* }     // 不吃换行，由 WHITESPACE 吃
+BLOCK_COMMENT =_{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+WHITESPACE    = _{ " " | "\t" | NEWLINE | LINE_COMMENT | BLOCK_COMMENT }
+
+// ---------- 关键字（保留字） ----------
+Const    = { "const" }
+Int      = { "int" }
+Void     = { "void" }
+If       = { "if" }
+Else     = { "else" }
+While    = { "while" }
+Break    = { "break" }
+Continue = { "continue" }
+Return   = { "return" }
+KEYWORD     = _{ Const | Int | Void | If | Else | While | Break | Continue | Return }
+
+// ---------- 错误同步（用于一次输出所有语法错误） ----------
+// 顶层：跳过到下一个 ';' 或 '}'（若无则尽量吃到行尾/文件尾）
+// 块内：同上；留在 Block 中继续解析
+ErrorStmt   = @{
+    (!(Semicolon | CloseBrace ) ~ ANY)+ ~ (Semicolon | CloseBrace)?
+}
