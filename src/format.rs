@@ -402,13 +402,13 @@ pub fn fmt(input: &str){
 
 #[cfg(test)]
 mod tests {
-    const FILE_PATH: &str = "tests/lab2/";
+    const FILE_PATH: &str = "tests/formatter/";
     use super::*;
 
     #[test]
-    fn test_example_1() {
+    fn test_formatter_example1() {
         // 1、把内容输出内存缓冲区
-        let filename = FILE_PATH.to_string() + "lab2_example1.txt";
+        let filename = FILE_PATH.to_string() + "example1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -416,9 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn test_example_2() {
+    fn test_formatter_example2() {
         // 1、把内容输出内存缓冲区
-        let filename = FILE_PATH.to_string() + "lab2_example2.txt";
+        let filename = FILE_PATH.to_string() + "example2.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -426,9 +426,9 @@ mod tests {
     }
 
     #[test]
-    fn test_example_3() {
+    fn test_formatter_example3() {
         // 1、把内容输出内存缓冲区
-        let filename = FILE_PATH.to_string() + "lab2_example3.txt";
+        let filename = FILE_PATH.to_string() + "example3.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn test_format_file() {
+    fn test_formatter_file() {
         let mut fmt_str = String::new();
         fmt_str.push_str("fn main() {return ");
         // 如果上一个字符串是return,则直接添加分号
@@ -453,8 +453,8 @@ mod tests {
 
 
     #[test]
-    fn test_lab2_in1(){
-        let filename = FILE_PATH.to_string() + "lab2_in1.txt";
+    fn test_formatter_input1() {
+        let filename = FILE_PATH.to_string() + "input1.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -462,8 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in2(){
-        let filename = FILE_PATH.to_string() + "lab2_in2.txt";
+    fn test_formatter_input2() {
+        let filename = FILE_PATH.to_string() + "input2.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -471,8 +471,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in3(){
-        let filename = FILE_PATH.to_string() + "lab2_in3.txt";
+    fn test_formatter_input3() {
+        let filename = FILE_PATH.to_string() + "input3.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -480,8 +480,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in4(){
-        let filename = FILE_PATH.to_string() + "lab2_in4.txt";
+    fn test_formatter_input4() {
+        let filename = FILE_PATH.to_string() + "input4.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);
@@ -489,8 +489,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lab2_in5(){
-        let filename = FILE_PATH.to_string() + "lab2_in5.txt";
+    fn test_formatter_input5() {
+        let filename = FILE_PATH.to_string() + "input5.txt";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
         let mut formatter = Formatter::new(0usize, &file, &mut binding);

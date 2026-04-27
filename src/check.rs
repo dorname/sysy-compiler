@@ -1432,7 +1432,7 @@ mod tests {
     use pest::iterators::Pair;
     use std::io::stdout;
 
-    const FILE_PATH: &str = "tests/lab3/";
+    const FILE_PATH: &str = "tests/semantic/";
     #[test]
     #[ignore]
     /// 递归测试
@@ -1465,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_test() {
+    fn test_semantic_test() {
         let filename = FILE_PATH.to_string() + "test.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut binding = stdout();
@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_example01() {
+    fn test_semantic_example() {
         // 1、把内容输出内存缓冲区
         let mut buf = stdout();
         let filename = FILE_PATH.to_string() + "example01.sy";
@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_normaltest01() {
+    fn test_semantic_undefined_variable() {
         // 1、把内容输出内存缓冲区
         let mut buf = Vec::<u8>::new();
         // let mut buf = stdout();
@@ -1492,17 +1492,14 @@ mod tests {
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut checker = Checker::new(&file, &mut buf);
         checker.syn_check().unwrap();
-        let mut actual = String::from_utf8(buf).unwrap();
-        // 根据操作系统替换换行符
-        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-        actual = actual.replace('\n', "\r\n");
+        let actual = String::from_utf8(buf).unwrap();
         let expected_filename = FILE_PATH.to_string() + "normaltest01.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn test_lab3_normaltest02() {
+    fn test_semantic_undefined_function() {
         // 1、把内容输出内存缓冲区
         let mut buf = Vec::<u8>::new();
         // let mut buf = stdout();
@@ -1510,17 +1507,14 @@ mod tests {
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut checker = Checker::new(&file, &mut buf);
         checker.syn_check().unwrap();
-        let mut actual = String::from_utf8(buf).unwrap();
-        // 根据操作系统替换换行符
-        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-        actual = actual.replace('\n', "\r\n");
+        let actual = String::from_utf8(buf).unwrap();
         let expected_filename = FILE_PATH.to_string() + "normaltest02.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn test_lab3_normaltest03() {
+    fn test_semantic_redefined_variable() {
         // 1、把内容输出内存缓冲区
         let mut buf = Vec::<u8>::new();
         // let mut buf = stdout();
@@ -1528,34 +1522,28 @@ mod tests {
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut checker = Checker::new(&file, &mut buf);
         checker.syn_check().unwrap();
-        let mut actual = String::from_utf8(buf).unwrap();
-        // 根据操作系统替换换行符
-        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-        actual = actual.replace('\n', "\r\n");
+        let actual = String::from_utf8(buf).unwrap();
         let expected_filename = FILE_PATH.to_string() + "normaltest03.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn test_lab3_normaltest04() {
+    fn test_semantic_redefined_function() {
         // 1、把内容输出内存缓冲区
         let mut buf = Vec::<u8>::new();
         let filename = FILE_PATH.to_string() + "normaltest04.sy";
         let file = std::fs::read_to_string(filename).expect("Failed to read file");
         let mut checker = Checker::new(&file, &mut buf);
         checker.syn_check().unwrap();
-        let mut actual = String::from_utf8(buf).unwrap();
-        // 根据操作系统替换换行符
-        // windows下 writeln! 生成的是 \n 但从文件中读出来的换行符是 \r\n
-        actual = actual.replace('\n', "\r\n");
+        let actual = String::from_utf8(buf).unwrap();
         let expected_filename = FILE_PATH.to_string() + "normaltest04.out";
         let expected = std::fs::read_to_string(expected_filename).expect("Failed to read file");
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn test_lab3_normaltest05() {
+    fn test_semantic_type_mismatched_assignment() {
         // 1、把内容输出内存缓冲区
         let mut buf = stdout();
         let filename = FILE_PATH.to_string() + "normaltest05.sy";
@@ -1565,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_normaltest06() {
+    fn test_semantic_type_mismatched_operation() {
         // 1、把内容输出内存缓冲区
         let mut buf = stdout();
         let filename = FILE_PATH.to_string() + "normaltest06.sy";
@@ -1575,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_normaltest07() {
+    fn test_semantic_type_mismatched_return() {
         // 1、把内容输出内存缓冲区
         let mut buf = stdout();
         let filename = FILE_PATH.to_string() + "normaltest07.sy";
@@ -1585,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_normaltest08() {
+    fn test_semantic_function_not_applicable() {
         // 1、把内容输出内存缓冲区
         let mut buf = stdout();
         let filename = FILE_PATH.to_string() + "normaltest08.sy";
@@ -1596,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab3_normaltest09() {
+    fn test_semantic_not_an_array() {
         // 1、把内容输出内存缓冲区
         let mut buf =  stdout();
         let filename = FILE_PATH.to_string() + "normaltest09.sy";
@@ -1606,7 +1594,7 @@ mod tests {
     }
     //
     #[test]
-    fn test_lab3_normaltest11() {
+    fn test_semantic_not_a_variable() {
         // 1、把内容输出内存缓冲区
         let mut buf =  stdout();
         let filename = FILE_PATH.to_string() + "normaltest11.sy";

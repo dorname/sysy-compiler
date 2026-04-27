@@ -1694,52 +1694,52 @@ mod tests {
     use inkwell::values::BasicValue;
     use std::arch::asm;
 
-    const FILE_PATH: &str = "tests/lab6/";
+    const FILE_PATH: &str = "tests/codegen/";
 
     #[test]
-    fn test_part1() {
-        let file_path = format!("{}{}", FILE_PATH, "part1.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part1.s");
+    fn test_codegen_basic_main() {
+        let file_path = format!("{}{}", FILE_PATH, "basic_main.sy");
+        let out_path = format!("{}{}", FILE_PATH, "basic_main.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }
 
     #[test]
-    fn test_part2() {
-        let file_path = format!("{}{}", FILE_PATH, "part2.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part2.s");
+    fn test_codegen_global_and_local() {
+        let file_path = format!("{}{}", FILE_PATH, "global_and_local.sy");
+        let out_path = format!("{}{}", FILE_PATH, "global_and_local.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }
 
     #[test]
-    fn test_part3() {
+    fn test_codegen_register_alloc() {
         log_init();
-        let file_path = format!("{}{}", FILE_PATH, "part3.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part3.s");
+        let file_path = format!("{}{}", FILE_PATH, "register_alloc.sy");
+        let out_path = format!("{}{}", FILE_PATH, "register_alloc.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }
 
     #[test]
-    fn test_part4() {
-        let file_path = format!("{}{}", FILE_PATH, "part4.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part4.s");
+    fn test_codegen_euclidean_algorithm() {
+        let file_path = format!("{}{}", FILE_PATH, "euclidean_algorithm.sy");
+        let out_path = format!("{}{}", FILE_PATH, "euclidean_algorithm.s");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let _ = generate_asm(&input, &out_path);
     }
 
     #[test]
-    fn test_ir() {
-        let file_path = format!("{}{}", FILE_PATH, "part4.sy");
-        let out_path = format!("{}{}", FILE_PATH, "part4.ll");
+    fn test_codegen_ir_input() {
+        let file_path = format!("{}{}", FILE_PATH, "euclidean_algorithm.sy");
+        let out_path = format!("{}{}", FILE_PATH, "euclidean_algorithm.ll");
         let input = std::fs::read_to_string(file_path).expect("Failed to read file");
         let scanner = Scanner::new(&input, &out_path);
         let _ = scanner.scan_collect();
     }
 
     #[test]
-    fn test_record_loc() {
+    fn test_codegen_record_location() {
         let mut allocator = LinearScan::new();
         let mocks: Vec<InnerVar> = vec![
             InnerVar::new("a".to_string(), 0, 10),
@@ -1760,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn test_record_loc1() {
+    fn test_codegen_record_location_1() {
         let mut allocator = NoAlloc::default();
         // 生命周期没有重合的栈空间可以完全复用
         // 由于hashmap的无序性分配的栈偏移也具有随机性，但栈空间基本是定的
@@ -1789,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_val_from_reg() {
+    fn test_codegen_get_value_from_reg() {
         use inkwell::context::Context;
 
         let mut allocator = LinearScan::new();
@@ -1931,7 +1931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_val_to_reg() {
+    fn test_codegen_load_value_to_reg() {
         use inkwell::context::Context;
 
         let mut allocator = LinearScan::new();

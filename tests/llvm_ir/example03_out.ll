@@ -9,6 +9,6 @@ mainEntry:
   store i32 1, i32* %a, align 4
   %a1 = load i32, i32* %a, align 4
   %g_var = load i32, i32* @g_var, align 4
-  %add_tmp = add i32 %a1, %g_var
-  ret i32 %add_tmp
+  %add_result = add i32 %a1, %g_var
+  ret i32 %add_result
 }

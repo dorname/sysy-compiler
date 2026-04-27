@@ -7,16 +7,21 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn unique_output_path() -> PathBuf {
+fn read_file(path: &Path) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
+}
+
+fn unique_output_path(suffix: &str) -> PathBuf {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("compiler-part4-{now}.s"))
+    std::env::temp_dir().join(format!("compiler-{suffix}-{now}.s"))
 }
 
-fn compile_part4(output_path: &Path) -> String {
-    let input = repo_root().join("tests/lab6/part4.sy");
+fn compile_codegen(input_name: &str, output_path: &Path) -> String {
+    let input = repo_root().join("tests/codegen").join(input_name);
     let status = Command::new(env!("CARGO_BIN_EXE_compiler"))
         .arg(&input)
         .arg(output_path)
@@ -28,12 +33,31 @@ fn compile_part4(output_path: &Path) -> String {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", output_path.display()))
 }
 
+fn stack_frame_size(asm: &str) -> usize {
+    asm.lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            let prefix = "addi sp, sp, -";
+            trimmed.strip_prefix(prefix)?.trim().parse::<usize>().ok()
+        })
+        .expect("missing stack frame prologue: addi sp, sp, -N")
+}
+
+fn load_store_count(asm: &str) -> usize {
+    asm.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            usize::from(trimmed.starts_with("lw ") || trimmed.starts_with("sw "))
+        })
+        .sum()
+}
+
 fn run_rars(asm_path: &Path) -> Output {
     Command::new("timeout")
         .arg("5s")
         .arg("java")
         .arg("-jar")
-        .arg(repo_root().join("tests/lab6/rars.jar"))
+        .arg(repo_root().join("tests/codegen/rars.jar"))
         .arg(asm_path)
         .arg("a0")
         .output()
@@ -63,11 +87,46 @@ fn section_between<'a>(asm: &'a str, start_label: &str, end_label: &str) -> &'a 
 }
 
 #[test]
-fn part4_generated_program_terminates_with_target_result() {
-    let output_path = unique_output_path();
-    let _ = compile_part4(&output_path);
+fn codegen_stack_frame_within_budget() {
+    let output_path = unique_output_path("register-alloc");
+    let generated = compile_codegen("register_alloc.sy", &output_path);
+    let target = read_file(&repo_root().join("tests/codegen/target_register_alloc.s"));
+
+    let generated_frame = stack_frame_size(&generated);
+    let target_frame = stack_frame_size(&target);
+
+    let _ = fs::remove_file(&output_path);
+
+    assert!(
+        generated_frame <= target_frame,
+        "codegen stack frame regressed: generated {generated_frame}, target baseline {target_frame}"
+    );
+}
+
+#[test]
+fn codegen_load_store_count_within_budget() {
+    let output_path = unique_output_path("register-alloc");
+    let generated = compile_codegen("register_alloc.sy", &output_path);
+    let target = read_file(&repo_root().join("tests/codegen/target_register_alloc.s"));
+
+    let generated_count = load_store_count(&generated);
+    let target_count = load_store_count(&target);
+    let budget = target_count + 20;
+
+    let _ = fs::remove_file(&output_path);
+
+    assert!(
+        generated_count <= budget,
+        "codegen load/store traffic regressed: generated {generated_count}, budget {budget}, target baseline {target_count}"
+    );
+}
+
+#[test]
+fn codegen_program_terminates_with_correct_result() {
+    let output_path = unique_output_path("euclidean");
+    let _ = compile_codegen("euclidean_algorithm.sy", &output_path);
     let generated = run_rars(&output_path);
-    let target = run_rars(&repo_root().join("tests/lab6/target_part4.s"));
+    let target = run_rars(&repo_root().join("tests/codegen/target_euclidean_algorithm.s"));
     let _ = fs::remove_file(&output_path);
 
     let generated_stdout = String::from_utf8_lossy(&generated.stdout);
@@ -76,19 +135,19 @@ fn part4_generated_program_terminates_with_target_result() {
     assert_ne!(
         generated.status.code(),
         Some(124),
-        "generated part4 program timed out\nstdout:\n{}\nstderr:\n{}",
+        "generated program timed out\nstdout:\n{}\nstderr:\n{}",
         generated_stdout,
         String::from_utf8_lossy(&generated.stderr)
     );
     assert!(
         generated_stdout.contains("Program terminated by calling exit"),
-        "generated part4 program did not terminate normally:\nstdout:\n{}\nstderr:\n{}",
+        "generated program did not terminate normally:\nstdout:\n{}\nstderr:\n{}",
         generated_stdout,
         String::from_utf8_lossy(&generated.stderr)
     );
     assert!(
         target_stdout.contains("Program terminated by calling exit"),
-        "target part4 program did not terminate normally:\nstdout:\n{}\nstderr:\n{}",
+        "target program did not terminate normally:\nstdout:\n{}\nstderr:\n{}",
         target_stdout,
         String::from_utf8_lossy(&target.stderr)
     );
@@ -100,25 +159,25 @@ fn part4_generated_program_terminates_with_target_result() {
 }
 
 #[test]
-fn part4_generated_program_does_not_timeout() {
-    let output_path = unique_output_path();
-    let _ = compile_part4(&output_path);
+fn codegen_program_does_not_timeout() {
+    let output_path = unique_output_path("euclidean");
+    let _ = compile_codegen("euclidean_algorithm.sy", &output_path);
     let output = run_rars(&output_path);
     let _ = fs::remove_file(&output_path);
 
     assert_ne!(
         output.status.code(),
         Some(124),
-        "generated part4 program timed out\nstdout:\n{}\nstderr:\n{}",
+        "generated program timed out\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
 #[test]
-fn part4_truthy_branches_target_loop_body_and_if_true() {
-    let output_path = unique_output_path();
-    let asm = compile_part4(&output_path);
+fn codegen_control_flow_branches_correct() {
+    let output_path = unique_output_path("euclidean");
+    let asm = compile_codegen("euclidean_algorithm.sy", &output_path);
     let _ = fs::remove_file(&output_path);
 
     let while_cond = section_between(&asm, "whileCond:\n", "whileBody:\n");

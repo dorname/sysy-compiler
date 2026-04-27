@@ -16,8 +16,8 @@ bEntry:
   %i3 = load i32, i32* %i2, align 4
   %i4 = load i32, i32* %i2, align 4
   %a = call i32 @a(i32 %i4)
-  %mul_tmp = mul i32 %i3, %a
-  ret i32 %mul_tmp
+  %mul_result = mul i32 %i3, %a
+  ret i32 %mul_result
 }
 
 define i32 @c(i32 %i, i32 %k) {
@@ -29,10 +29,10 @@ cEntry:
   %i5 = load i32, i32* %i2, align 4
   %i6 = load i32, i32* %i2, align 4
   %b = call i32 @b(i32 %i6)
-  %mul_tmp = mul i32 %i5, %b
+  %mul_result = mul i32 %i5, %b
   %k7 = load i32, i32* %k4, align 4
-  %mul_tmp8 = mul i32 %mul_tmp, %k7
-  ret i32 %mul_tmp8
+  %mul_result8 = mul i32 %mul_result, %k7
+  ret i32 %mul_result8
 }
 
 define i32 @main() {

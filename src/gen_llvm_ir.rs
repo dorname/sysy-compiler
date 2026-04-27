@@ -2011,14 +2011,14 @@ mod tests {
     use std::io::stdout;
     use std::process::Command;
 
-    const FILE_PATH: &str = "tests/lab5/";
+    const FILE_PATH: &str = "tests/llvm_ir/";
 
     /// 执行LLVM IR文件并返回退出码
     fn execute_llvm_ir(file_path: &str) -> i32 {
-        let output = Command::new("lli")
+        let output = Command::new("lli-14")
             .arg(file_path)
             .output()
-            .expect("Failed to execute lli command");
+            .expect("Failed to execute lli-14 command");
 
         output.status.code().unwrap_or(-1)
     }

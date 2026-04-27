@@ -322,7 +322,7 @@ impl From<Pair<'_, Rule>> for Token {
 
 #[cfg(test)]
 mod tests {
-    const FILE_PATH: &str = "tests/";
+    const FILE_PATH: &str = "tests/lexer/";
     use crate::lexer::IntegerConst::{Hex, Octal};
     use super::*;
 

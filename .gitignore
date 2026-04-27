@@ -16,3 +16,10 @@ Cargo.lock
 .omx/
 .codex/*
 .idea/*
+.specstory/*
+
+# 生成的汇编/IR/日志
+tests/codegen/*.s
+tests/codegen/*.ll
+temp.ll
+tklogsize.txt
